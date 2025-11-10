@@ -1,0 +1,567 @@
+definitions:
+  MultiUploadResponse:
+    properties:
+      files:
+        items:
+          $ref: '#/definitions/UploadResponse'
+        type: array
+    type: object
+  UploadResponse:
+    properties:
+      file_name:
+        example: video.mp4
+        type: string
+      file_path:
+        example: /uploads/video.mp4
+        type: string
+      file_size:
+        example: 1048576
+        type: integer
+    type: object
+  govid_internal_models.AnimationType:
+    enum:
+    - fade
+    - slide
+    - zoom
+    - none
+    type: string
+    x-enum-varnames:
+    - AnimationFade
+    - AnimationSlide
+    - AnimationZoom
+    - AnimationNone
+  govid_internal_models.AudioConfig:
+    properties:
+      end_time:
+        description: trim audio end (seconds)
+        example: 30
+        type: number
+      fade_in:
+        description: fade in duration
+        example: 2
+        type: number
+      fade_out:
+        description: fade out duration
+        example: 2
+        type: number
+      file_path:
+        example: /uploads/music.mp3
+        type: string
+      start_time:
+        description: trim audio start (seconds)
+        example: 0
+        type: number
+      volume:
+        description: 0.0 to 1.0
+        example: 0.3
+        type: number
+    type: object
+  govid_internal_models.AudioRequest:
+    properties:
+      audio:
+        $ref: '#/definitions/govid_internal_models.AudioConfig'
+      video_path:
+        type: string
+    required:
+    - audio
+    - video_path
+    type: object
+  govid_internal_models.CompleteProcessRequest:
+    properties:
+      audio:
+        $ref: '#/definitions/govid_internal_models.AudioConfig'
+      overlays:
+        items:
+          $ref: '#/definitions/govid_internal_models.ImageOverlay'
+        type: array
+      segments:
+        items:
+          $ref: '#/definitions/govid_internal_models.VideoSegment'
+        minItems: 1
+        type: array
+    required:
+    - segments
+    type: object
+  govid_internal_models.ErrorResponse:
+    properties:
+      error:
+        example: Invalid request
+        type: string
+      message:
+        example: Detailed error message
+        type: string
+    type: object
+  govid_internal_models.HealthResponse:
+    properties:
+      status:
+        example: ok
+        type: string
+      version:
+        example: 1.0.0
+        type: string
+    type: object
+  govid_internal_models.ImageOverlay:
+    properties:
+      animation:
+        allOf:
+        - $ref: '#/definitions/govid_internal_models.AnimationType'
+        example: fade
+      end_time:
+        description: when overlay disappears (seconds)
+        example: 5
+        type: number
+      fade_duration:
+        description: Animation specific options
+        example: 1
+        type: number
+      file_path:
+        example: /uploads/logo.png
+        type: string
+      position:
+        allOf:
+        - $ref: '#/definitions/govid_internal_models.OverlayPosition'
+        example: top-left
+      slide_direction:
+        allOf:
+        - $ref: '#/definitions/govid_internal_models.SlideDirection'
+        example: left
+      slide_duration:
+        example: 1
+        type: number
+      start_time:
+        description: when overlay appears (seconds)
+        example: 0
+        type: number
+      x:
+        description: custom x position (only if position is "custom")
+        example: 10
+        type: integer
+      "y":
+        description: custom y position (only if position is "custom")
+        example: 10
+        type: integer
+      zoom_from:
+        description: initial zoom level
+        example: 0.5
+        type: number
+      zoom_to:
+        description: final zoom level
+        example: 1.5
+        type: number
+    type: object
+  govid_internal_models.JobResponse:
+    properties:
+      created_at:
+        example: "2025-01-13T10:00:00Z"
+        type: string
+      job_id:
+        example: 550e8400-e29b-41d4-a716-446655440000
+        type: string
+      message:
+        example: Job created successfully
+        type: string
+      status:
+        allOf:
+        - $ref: '#/definitions/govid_internal_models.JobStatus'
+        example: pending
+    type: object
+  govid_internal_models.JobStatus:
+    enum:
+    - pending
+    - processing
+    - completed
+    - failed
+    type: string
+    x-enum-varnames:
+    - JobStatusPending
+    - JobStatusProcessing
+    - JobStatusCompleted
+    - JobStatusFailed
+  govid_internal_models.JobStatusResponse:
+    properties:
+      created_at:
+        example: "2025-01-13T10:00:00Z"
+        type: string
+      error:
+        example: ""
+        type: string
+      job_id:
+        example: 550e8400-e29b-41d4-a716-446655440000
+        type: string
+      output_path:
+        example: /outputs/result.mp4
+        type: string
+      progress:
+        description: 0-100
+        example: 50
+        type: integer
+      status:
+        allOf:
+        - $ref: '#/definitions/govid_internal_models.JobStatus'
+        example: processing
+      updated_at:
+        example: "2025-01-13T10:05:00Z"
+        type: string
+    type: object
+  govid_internal_models.MergeVideoRequest:
+    properties:
+      segments:
+        items:
+          $ref: '#/definitions/govid_internal_models.VideoSegment'
+        minItems: 2
+        type: array
+    required:
+    - segments
+    type: object
+  govid_internal_models.OverlayPosition:
+    enum:
+    - top-left
+    - top-right
+    - bottom-left
+    - bottom-right
+    - center
+    - custom
+    type: string
+    x-enum-varnames:
+    - PositionTopLeft
+    - PositionTopRight
+    - PositionBottomLeft
+    - PositionBottomRight
+    - PositionCenter
+    - PositionCustom
+  govid_internal_models.OverlayRequest:
+    properties:
+      overlay:
+        $ref: '#/definitions/govid_internal_models.ImageOverlay'
+      video_path:
+        type: string
+    required:
+    - overlay
+    - video_path
+    type: object
+  govid_internal_models.SlideDirection:
+    enum:
+    - left
+    - right
+    - top
+    - bottom
+    type: string
+    x-enum-varnames:
+    - SlideFromLeft
+    - SlideFromRight
+    - SlideFromTop
+    - SlideFromBottom
+  govid_internal_models.VideoSegment:
+    properties:
+      end_time:
+        description: in seconds, 0 means end of video
+        example: 10.5
+        type: number
+      file_path:
+        example: /uploads/video1.mp4
+        type: string
+      start_time:
+        description: in seconds
+        example: 0
+        type: number
+    type: object
+info:
+  contact: {}
+  description: FFmpeg video processing API with MCP server support
+  title: GoVid API
+  version: "1.0"
+paths:
+  /api/v1/health:
+    get:
+      description: Check if the service is running
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/govid_internal_models.HealthResponse'
+      summary: Health check endpoint
+      tags:
+      - Health
+  /api/v1/jobs/{id}:
+    get:
+      description: Get the status of a video processing job
+      parameters:
+      - description: Job ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/govid_internal_models.JobStatusResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/govid_internal_models.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/govid_internal_models.ErrorResponse'
+      security:
+      - ApiKeyAuth: []
+      summary: Get job status
+      tags:
+      - Jobs
+  /api/v1/upload:
+    post:
+      consumes:
+      - multipart/form-data
+      description: Upload a video, image, or audio file
+      parameters:
+      - description: File to upload
+        in: formData
+        name: file
+        required: true
+        type: file
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/UploadResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/govid_internal_models.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/govid_internal_models.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/govid_internal_models.ErrorResponse'
+      security:
+      - ApiKeyAuth: []
+      summary: Upload a single file
+      tags:
+      - Upload
+  /api/v1/upload/multiple:
+    post:
+      consumes:
+      - multipart/form-data
+      description: Upload multiple video, image, or audio files
+      parameters:
+      - description: Files to upload (multiple)
+        in: formData
+        name: files
+        required: true
+        type: file
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/MultiUploadResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/govid_internal_models.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/govid_internal_models.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/govid_internal_models.ErrorResponse'
+      security:
+      - ApiKeyAuth: []
+      summary: Upload multiple files
+      tags:
+      - Upload
+  /api/v1/video/audio:
+    post:
+      consumes:
+      - application/json
+      - multipart/form-data
+      description: Add background music. Supports both JSON (with file paths) and
+        multipart/form-data (direct upload)
+      parameters:
+      - description: Audio request (JSON)
+        in: body
+        name: request
+        schema:
+          $ref: '#/definitions/govid_internal_models.AudioRequest'
+      - description: Video file (multipart)
+        in: formData
+        name: video
+        type: file
+      - description: Audio file (multipart)
+        in: formData
+        name: audio
+        type: file
+      - description: JSON string of audio configuration (multipart)
+        in: formData
+        name: audio_config
+        type: string
+      produces:
+      - application/json
+      responses:
+        "202":
+          description: Accepted
+          schema:
+            $ref: '#/definitions/govid_internal_models.JobResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/govid_internal_models.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/govid_internal_models.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/govid_internal_models.ErrorResponse'
+      security:
+      - ApiKeyAuth: []
+      summary: Add background music to video
+      tags:
+      - Video
+  /api/v1/video/merge:
+    post:
+      consumes:
+      - application/json
+      - multipart/form-data
+      description: Merge multiple video segments. Supports both JSON (with file paths)
+        and multipart/form-data (direct upload, max 10 files)
+      parameters:
+      - description: Video merge request (JSON)
+        in: body
+        name: request
+        schema:
+          $ref: '#/definitions/govid_internal_models.MergeVideoRequest'
+      - description: Video files to upload (multipart, 2-10 files)
+        in: formData
+        name: videos
+        type: file
+      produces:
+      - application/json
+      responses:
+        "202":
+          description: Accepted
+          schema:
+            $ref: '#/definitions/govid_internal_models.JobResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/govid_internal_models.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/govid_internal_models.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/govid_internal_models.ErrorResponse'
+      security:
+      - ApiKeyAuth: []
+      summary: Merge multiple videos with timeframes
+      tags:
+      - Video
+  /api/v1/video/overlay:
+    post:
+      consumes:
+      - application/json
+      - multipart/form-data
+      description: Add an image overlay. Supports both JSON (with file paths) and
+        multipart/form-data (direct upload)
+      parameters:
+      - description: Overlay request (JSON)
+        in: body
+        name: request
+        schema:
+          $ref: '#/definitions/govid_internal_models.OverlayRequest'
+      - description: Video file (multipart)
+        in: formData
+        name: video
+        type: file
+      - description: Image file for overlay (multipart)
+        in: formData
+        name: image
+        type: file
+      - description: JSON string of overlay configuration (multipart)
+        in: formData
+        name: overlay_config
+        type: string
+      produces:
+      - application/json
+      responses:
+        "202":
+          description: Accepted
+          schema:
+            $ref: '#/definitions/govid_internal_models.JobResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/govid_internal_models.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/govid_internal_models.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/govid_internal_models.ErrorResponse'
+      security:
+      - ApiKeyAuth: []
+      summary: Add image overlay to video
+      tags:
+      - Video
+  /api/v1/video/process:
+    post:
+      consumes:
+      - application/json
+      description: Process video with merge, overlay, and audio in one operation
+      parameters:
+      - description: Complete process request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/govid_internal_models.CompleteProcessRequest'
+      produces:
+      - application/json
+      responses:
+        "202":
+          description: Accepted
+          schema:
+            $ref: '#/definitions/govid_internal_models.JobResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/govid_internal_models.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/govid_internal_models.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/govid_internal_models.ErrorResponse'
+      security:
+      - ApiKeyAuth: []
+      summary: Complete video processing
+      tags:
+      - Video
+securityDefinitions:
+  ApiKeyAuth:
+    description: API key for authentication
+    in: header
+    name: X-API-Key
+    type: apiKey
+swagger: "2.0"
