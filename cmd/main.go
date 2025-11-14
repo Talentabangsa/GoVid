@@ -44,7 +44,7 @@ func main() {
 
 	// Initialize shared components
 	executor := ffmpeg.NewExecutor(cfg.FFmpegBinary, time.Duration(cfg.JobTimeout)*time.Second)
-	jobStore := models.NewJobStore()
+	jobStore := models.NewJobStoreWithPersistence(cfg.JobsDir)
 
 	// Initialize validators
 	httpValidator := auth.NewValidator(cfg.HTTPAPIKey)

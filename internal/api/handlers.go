@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -386,6 +387,69 @@ func (h *Handler) GetJobStatus(c fiber.Ctx) error {
 	return c.JSON(job.GetStatus())
 }
 
+// DownloadOutput godoc
+// @Summary Download completed job output
+// @Description Download the output file from a completed processing job
+// @Tags Jobs
+// @Produce octet-stream
+// @Param id path string true "Job ID"
+// @Success 200 {file} string
+// @Failure 404 {object} models.ErrorResponse "Job not found"
+// @Failure 202 {object} models.ErrorResponse "Job not yet completed"
+// @Failure 500 {object} models.ErrorResponse "File not accessible"
+// @Router /api/v1/jobs/{id}/download [get]
+// @Security ApiKeyAuth
+func (h *Handler) DownloadOutput(c fiber.Ctx) error {
+	jobID := c.Params("id")
+
+	job, exists := h.jobStore.Get(jobID)
+	if !exists {
+		return c.Status(fiber.StatusNotFound).JSON(models.ErrorResponse{
+			Error:   "Job not found",
+			Message: fmt.Sprintf("Job with ID %s does not exist", jobID),
+		})
+	}
+
+	status := job.GetStatus()
+
+	// Check if job is completed
+	if status.Status != models.JobStatusCompleted {
+		return c.Status(fiber.StatusAccepted).JSON(models.ErrorResponse{
+			Error:   "Job not completed",
+			Message: fmt.Sprintf("Job is currently %s. Please wait for it to complete.", status.Status),
+		})
+	}
+
+	// Check if output path is set
+	if status.OutputPath == "" {
+		return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
+			Error:   "No output file",
+			Message: "Job completed but no output file was generated",
+		})
+	}
+
+	// Verify file exists
+	if _, err := os.Stat(status.OutputPath); os.IsNotExist(err) {
+		logger.Error("Output file not found for job %s: %s", jobID, status.OutputPath)
+		return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
+			Error:   "File not found",
+			Message: "The output file no longer exists on the server",
+		})
+	}
+
+	// Get filename from path
+	filename := filepath.Base(status.OutputPath)
+
+	// Set download headers
+	c.Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", filename))
+	c.Set("Content-Type", "application/octet-stream")
+
+	logger.Info("Downloading output for job %s: %s", jobID, status.OutputPath)
+
+	// Send the file
+	return c.SendFile(status.OutputPath)
+}
+
 // createAndStartJob is a helper to create a job and return response
 func (h *Handler) createAndStartJob() (*models.Job, models.JobResponse) {
 	jobID := uuid.New().String()
@@ -406,6 +470,7 @@ func (h *Handler) createAndStartJob() (*models.Job, models.JobResponse) {
 func (h *Handler) processJobCommon(job *models.Job, jobType string, processFn func(context.Context, string) error) {
 	job.UpdateStatus(models.JobStatusProcessing)
 	job.UpdateProgress(10)
+	_ = h.jobStore.Update(job)
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(h.cfg.JobTimeout)*time.Second)
 	defer cancel()
@@ -414,16 +479,19 @@ func (h *Handler) processJobCommon(job *models.Job, jobType string, processFn fu
 
 	logger.Info("Starting %s job %s", jobType, job.ID)
 	job.UpdateProgress(30)
+	_ = h.jobStore.Update(job)
 
 	if err := processFn(ctx, outputPath); err != nil {
 		logger.Error("%s job %s failed: %v", jobType, job.ID, err)
 		job.SetError(err.Error())
+		_ = h.jobStore.Update(job)
 		return
 	}
 
 	job.UpdateProgress(100)
 	job.SetOutput(outputPath)
 	job.UpdateStatus(models.JobStatusCompleted)
+	_ = h.jobStore.Update(job)
 	logger.Info("%s job %s completed successfully", jobType, job.ID)
 }
 

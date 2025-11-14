@@ -3,8 +3,8 @@ package ffmpeg
 import (
 	"context"
 	"fmt"
-	"strings"
 
+	ffmpeg "github.com/u2takey/ffmpeg-go"
 	"govid/internal/models"
 )
 
@@ -18,87 +18,85 @@ func (e *Executor) AddBackgroundMusic(ctx context.Context, videoPath string, aud
 		return fmt.Errorf("audio file: %w", err)
 	}
 
-	// Build FFmpeg command
-	args := []string{"-y", "-i", videoPath, "-i", audio.FilePath}
+	// Load video and audio
+	videoStream := ffmpeg.Input(videoPath)
+	audioStream := ffmpeg.Input(audio.FilePath).Audio()
 
-	// Build audio filter chain
-	audioFilter := buildAudioFilter(audio)
+	// Apply audio filters
+	audioStream = applyAudioFilters(audioStream, audio)
 
-	args = append(args, "-filter_complex", audioFilter)
-	args = append(args, "-map", "0:v", "-map", "[aout]")
-	args = append(args, "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", outputPath)
+	// Mix with original video audio
+	mixedAudio := ffmpeg.Filter(
+		[]*ffmpeg.Stream{videoStream.Audio(), audioStream},
+		"amix",
+		ffmpeg.Args{},
+		ffmpeg.KwArgs{
+			"inputs":               2,
+			"duration":             "first",
+			"dropout_transition":   2,
+		},
+	)
 
-	return e.Execute(ctx, args)
+	// Output with video and mixed audio
+	output := ffmpeg.Output(
+		[]*ffmpeg.Stream{videoStream.Video(), mixedAudio},
+		outputPath,
+		ffmpeg.KwArgs{
+			"c:v":  "copy",
+			"c:a":  "aac",
+			"b:a":  "192k",
+		},
+	).OverWriteOutput()
+
+	return output.Run()
 }
 
-// buildAudioFilter builds the audio filter string with trimming, fade, and volume control
-func buildAudioFilter(audio models.AudioConfig) string {
-	var filters []string
-
-	// Start with audio input
-	audioStream := "[1:a]"
-
-	// Add trim filter if specified
+// applyAudioFilters applies trim, fade, and volume filters to audio stream
+func applyAudioFilters(audioStream *ffmpeg.Stream, audio models.AudioConfig) *ffmpeg.Stream {
+	// Apply trim filter if specified
 	if audio.StartTime != nil || audio.EndTime != nil {
-		var trimFilter string
-		switch {
-		case audio.StartTime != nil && audio.EndTime != nil:
-			trimFilter = fmt.Sprintf("atrim=start=%.2f:end=%.2f", *audio.StartTime, *audio.EndTime)
-		case audio.StartTime != nil:
-			trimFilter = fmt.Sprintf("atrim=start=%.2f", *audio.StartTime)
-		case audio.EndTime != nil:
-			trimFilter = fmt.Sprintf("atrim=end=%.2f", *audio.EndTime)
+		trimKwArgs := ffmpeg.KwArgs{}
+		if audio.StartTime != nil {
+			trimKwArgs["start"] = *audio.StartTime
 		}
-		audioStream += trimFilter + ","
-	}
-
-	// Reset timestamps after trim
-	if audio.StartTime != nil || audio.EndTime != nil {
-		audioStream += "asetpts=PTS-STARTPTS,"
+		if audio.EndTime != nil {
+			trimKwArgs["end"] = *audio.EndTime
+		}
+		audioStream = audioStream.Filter("atrim", ffmpeg.Args{}, trimKwArgs)
+		audioStream = audioStream.Filter("asetpts", ffmpeg.Args{"PTS-STARTPTS"})
 	}
 
 	// Add fade in effect
 	if audio.FadeIn != nil && *audio.FadeIn > 0 {
-		fadeIn := fmt.Sprintf("afade=t=in:st=0:d=%.2f", *audio.FadeIn)
-		audioStream += fadeIn + ","
+		audioStream = audioStream.Filter("afade", ffmpeg.Args{}, ffmpeg.KwArgs{
+			"t":  "in",
+			"st": 0,
+			"d":  *audio.FadeIn,
+		})
 	}
 
 	// Add fade out effect
 	if audio.FadeOut != nil && *audio.FadeOut > 0 {
-		// Calculate fade out start time
-		var fadeOutStart float64
-		switch {
-		case audio.EndTime != nil && audio.StartTime != nil:
-			fadeOutStart = *audio.EndTime - *audio.StartTime - *audio.FadeOut
-		case audio.EndTime != nil:
-			fadeOutStart = *audio.EndTime - *audio.FadeOut
-		default:
-			// Use a default duration if not specified (will be calculated by FFmpeg)
-			fadeOutStart = 0 // FFmpeg will handle this
+		fadeKwArgs := ffmpeg.KwArgs{
+			"t": "out",
+			"d": *audio.FadeOut,
 		}
 
-		if fadeOutStart > 0 {
-			fadeOut := fmt.Sprintf("afade=t=out:st=%.2f:d=%.2f", fadeOutStart, *audio.FadeOut)
-			audioStream += fadeOut + ","
-		} else {
-			fadeOut := fmt.Sprintf("afade=t=out:d=%.2f", *audio.FadeOut)
-			audioStream += fadeOut + ","
+		// Calculate fade out start time if we have end time
+		if audio.EndTime != nil && audio.StartTime != nil {
+			fadeOutStart := *audio.EndTime - *audio.StartTime - *audio.FadeOut
+			if fadeOutStart > 0 {
+				fadeKwArgs["st"] = fadeOutStart
+			}
 		}
+
+		audioStream = audioStream.Filter("afade", ffmpeg.Args{}, fadeKwArgs)
 	}
 
 	// Add volume control
-	volumeFilter := fmt.Sprintf("volume=%.2f", audio.Volume)
-	audioStream += volumeFilter
+	audioStream = audioStream.Filter("volume", ffmpeg.Args{fmt.Sprintf("%.2f", audio.Volume)})
 
-	// Finalize audio stream label
-	audioStream += "[music]"
-	filters = append(filters, audioStream)
-
-	// Mix with original video audio
-	mixFilter := "[0:a][music]amix=inputs=2:duration=first:dropout_transition=2[aout]"
-	filters = append(filters, mixFilter)
-
-	return strings.Join(filters, ";")
+	return audioStream
 }
 
 // ReplaceAudio replaces video audio completely with background music (no mixing)
@@ -111,67 +109,26 @@ func (e *Executor) ReplaceAudio(ctx context.Context, videoPath string, audio mod
 		return fmt.Errorf("audio file: %w", err)
 	}
 
-	// Build FFmpeg command
-	args := []string{"-y", "-i", videoPath, "-i", audio.FilePath}
+	// Load video and audio
+	videoStream := ffmpeg.Input(videoPath).Video()
+	audioStream := ffmpeg.Input(audio.FilePath).Audio()
 
-	// Build audio filter (without mixing)
-	audioFilter := buildAudioFilterNoMix(audio)
+	// Apply audio filters
+	audioStream = applyAudioFilters(audioStream, audio)
 
-	args = append(args, "-filter_complex", audioFilter)
-	args = append(args, "-map", "0:v", "-map", "[aout]")
-	args = append(args, "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest", outputPath)
+	// Output with video and replacement audio
+	output := ffmpeg.Output(
+		[]*ffmpeg.Stream{videoStream, audioStream},
+		outputPath,
+		ffmpeg.KwArgs{
+			"c:v":      "copy",
+			"c:a":      "aac",
+			"b:a":      "192k",
+			"shortest": nil, // Use shortest input duration
+		},
+	).OverWriteOutput()
 
-	return e.Execute(ctx, args)
-}
-
-// buildAudioFilterNoMix builds audio filter without mixing with original audio
-func buildAudioFilterNoMix(audio models.AudioConfig) string {
-	audioStream := "[1:a]"
-
-	// Add trim filter if specified
-	if audio.StartTime != nil || audio.EndTime != nil {
-		var trimFilter string
-		switch {
-		case audio.StartTime != nil && audio.EndTime != nil:
-			trimFilter = fmt.Sprintf("atrim=start=%.2f:end=%.2f", *audio.StartTime, *audio.EndTime)
-		case audio.StartTime != nil:
-			trimFilter = fmt.Sprintf("atrim=start=%.2f", *audio.StartTime)
-		case audio.EndTime != nil:
-			trimFilter = fmt.Sprintf("atrim=end=%.2f", *audio.EndTime)
-		}
-		audioStream += trimFilter + ","
-	}
-
-	// Reset timestamps after trim
-	if audio.StartTime != nil || audio.EndTime != nil {
-		audioStream += "asetpts=PTS-STARTPTS,"
-	}
-
-	// Add fade in
-	if audio.FadeIn != nil && *audio.FadeIn > 0 {
-		audioStream += fmt.Sprintf("afade=t=in:st=0:d=%.2f,", *audio.FadeIn)
-	}
-
-	// Add fade out
-	if audio.FadeOut != nil && *audio.FadeOut > 0 {
-		var fadeOutStart float64
-		if audio.EndTime != nil && audio.StartTime != nil {
-			fadeOutStart = *audio.EndTime - *audio.StartTime - *audio.FadeOut
-		} else {
-			fadeOutStart = 0
-		}
-
-		if fadeOutStart > 0 {
-			audioStream += fmt.Sprintf("afade=t=out:st=%.2f:d=%.2f,", fadeOutStart, *audio.FadeOut)
-		} else {
-			audioStream += fmt.Sprintf("afade=t=out:d=%.2f,", *audio.FadeOut)
-		}
-	}
-
-	// Add volume
-	audioStream += fmt.Sprintf("volume=%.2f[aout]", audio.Volume)
-
-	return audioStream
+	return output.Run()
 }
 
 // CompleteProcess performs complete video processing with merge, overlay, and audio
@@ -210,8 +167,11 @@ func (e *Executor) CompleteProcess(ctx context.Context, req models.CompleteProce
 		}
 	} else {
 		// Just copy the current video to output
-		args := []string{"-y", "-i", currentVideo, "-c", "copy", outputPath}
-		if err := e.Execute(ctx, args); err != nil {
+		output := ffmpeg.Input(currentVideo).Output(outputPath, ffmpeg.KwArgs{
+			"c": "copy",
+		}).OverWriteOutput()
+
+		if err := output.Run(); err != nil {
 			return fmt.Errorf("copy video: %w", err)
 		}
 	}

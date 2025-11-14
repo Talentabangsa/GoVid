@@ -100,6 +100,7 @@ Configuration is done via environment variables. See `.env.example` for all avai
 | `UPLOAD_DIR` | Directory for uploaded files | ./uploads |
 | `OUTPUT_DIR` | Directory for output files | ./outputs |
 | `TEMP_DIR` | Directory for temporary files | ./temp |
+| `JOBS_DIR` | Directory for storing job metadata | ./jobs |
 | `MAX_CONCURRENT_JOBS` | Max concurrent processing jobs | 3 |
 | `JOB_TIMEOUT` | Job timeout in seconds | 3600 |
 
@@ -312,6 +313,83 @@ Response:
 ```
 
 Job statuses: `pending`, `processing`, `completed`, `failed`
+
+#### Download Job Output
+```bash
+GET /api/v1/jobs/{job_id}/download
+```
+
+Download the completed output file from a processing job:
+```bash
+curl -X GET http://localhost:4101/api/v1/jobs/550e8400-e29b-41d4-a716-446655440000/download \
+  -H "X-API-Key: your-api-key" \
+  -o result.mp4
+```
+
+Response:
+- **Status 200**: File is downloaded (Content-Type: application/octet-stream)
+- **Status 202**: Job is not yet completed
+- **Status 404**: Job not found
+- **Status 500**: Output file no longer exists
+
+## Job Persistence
+
+### Overview
+
+Job records are now **automatically persisted to disk**, so you can retrieve job information even after the application restarts.
+
+- Each completed job is saved to `{JOBS_DIR}/{job_id}.json`
+- Jobs are automatically loaded from disk on startup
+- All job updates (status, progress, output path, errors) are persisted in real-time
+
+### How It Works
+
+1. **On Startup**: The application loads all previously saved job files from disk
+2. **During Processing**: Job status updates are automatically saved to disk after each state change
+3. **On Query**: You can retrieve any job that has been processed, even weeks later
+
+### Example: Retrieving a Job After Restart
+
+```bash
+# Start processing
+curl -X POST http://localhost:4101/api/v1/video/merge \
+  -H "X-API-Key: your-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{"segments": [...]}' | jq -r '.job_id'
+# Output: 550e8400-e29b-41d4-a716-446655440000
+
+# Restart the application (jobs are persisted!)
+# ... application restarts ...
+
+# Query job status after restart - job data is still available!
+curl -X GET http://localhost:4101/api/v1/jobs/550e8400-e29b-41d4-a716-446655440000 \
+  -H "X-API-Key: your-api-key"
+# Returns the same job status information
+```
+
+### Storage Location
+
+Job metadata is stored in the `JOBS_DIR` directory (default: `./jobs`):
+
+```
+./jobs/
+├── 550e8400-e29b-41d4-a716-446655440000.json
+├── 660e8400-e29b-41d4-a716-446655440001.json
+└── 770e8400-e29b-41d4-a716-446655440002.json
+```
+
+Each JSON file contains:
+```json
+{
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "status": "completed",
+  "progress": 100,
+  "output_path": "/outputs/550e8400-e29b-41d4-a716-446655440000.mp4",
+  "error": "",
+  "created_at": "2025-01-13T10:00:00Z",
+  "updated_at": "2025-01-13T10:05:00Z"
+}
+```
 
 ## MCP Server Usage
 

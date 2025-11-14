@@ -33,6 +33,7 @@ func SetupRoutes(app *fiber.App, handler *Handler, validator *auth.Validator) {
 	// Job status endpoints
 	jobs := protected.Group("/jobs")
 	jobs.Get("/:id", handler.GetJobStatus)
+	jobs.Get("/:id/download", handler.DownloadOutput)
 
 	// Upload endpoints
 	protected.Post("/upload", handler.UploadFile)

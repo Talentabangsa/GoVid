@@ -3,8 +3,8 @@ package ffmpeg
 import (
 	"context"
 	"fmt"
-	"strings"
 
+	ffmpeg "github.com/u2takey/ffmpeg-go"
 	"govid/internal/models"
 )
 
@@ -18,36 +18,36 @@ func (e *Executor) AddImageOverlay(ctx context.Context, videoPath string, overla
 		return fmt.Errorf("overlay image: %w", err)
 	}
 
-	// Build FFmpeg command
-	args := []string{"-y", "-i", videoPath, "-i", overlay.FilePath}
+	// Build overlay stream with filters
+	overlayStream := ffmpeg.Input(overlay.FilePath)
 
-	// Build filter chain for the overlay
-	filterChain := buildOverlayFilter(overlay)
+	// Always apply format for transparency
+	overlayStream = overlayStream.Filter("format", ffmpeg.Args{"rgba"})
 
-	args = append(args, "-filter_complex", filterChain)
-	args = append(args, "-c:v", "libx264", "-preset", "medium", "-crf", "23", "-c:a", "copy", outputPath)
-
-	return e.Execute(ctx, args)
-}
-
-// buildOverlayFilter builds the overlay filter string with animations
-func buildOverlayFilter(overlay models.ImageOverlay) string {
-	var filters []string
-
-	// Start with the image input
-	imageFilter := "[1:v]"
-
-	// Add animation filters
+	// Apply animation filters
 	switch overlay.Animation {
 	case models.AnimationFade:
 		duration := 1.0
 		if overlay.FadeDuration != nil {
 			duration = *overlay.FadeDuration
 		}
-		// Fade in at start, fade out at end
-		fadeIn := fmt.Sprintf("fade=t=in:st=%.2f:d=%.2f", overlay.StartTime, duration)
-		fadeOut := fmt.Sprintf("fade=t=out:st=%.2f:d=%.2f", overlay.EndTime-duration, duration)
-		imageFilter += fmt.Sprintf("%s,%s", fadeIn, fadeOut)
+		totalDuration := overlay.EndTime - overlay.StartTime
+
+		// Fade in
+		overlayStream = overlayStream.Filter("fade", ffmpeg.Args{}, ffmpeg.KwArgs{
+			"t":     "in",
+			"st":    0,
+			"d":     duration,
+			"alpha": 1,
+		})
+
+		// Fade out
+		overlayStream = overlayStream.Filter("fade", ffmpeg.Args{}, ffmpeg.KwArgs{
+			"t":     "out",
+			"st":    totalDuration - duration,
+			"d":     duration,
+			"alpha": 1,
+		})
 
 	case models.AnimationZoom:
 		zoomFrom := 1.0
@@ -59,35 +59,19 @@ func buildOverlayFilter(overlay models.ImageOverlay) string {
 			zoomTo = *overlay.ZoomTo
 		}
 		duration := overlay.EndTime - overlay.StartTime
-		// Calculate zoom rate
 		zoomRate := (zoomTo - zoomFrom) / duration
-		imageFilter += fmt.Sprintf("zoompan=z='if(lte(zoom,%.2f),zoom+%.6f,%.2f)':d=1:s=1280x720",
-			zoomTo, zoomRate, zoomTo)
 
-	case models.AnimationSlide:
-		// Slide animation will be handled in overlay expression
-		// Just pass through the image
-		break
-
-	case models.AnimationNone:
-		// No animation
-		break
+		overlayStream = overlayStream.Filter("zoompan", ffmpeg.Args{}, ffmpeg.KwArgs{
+			"z": fmt.Sprintf("if(lte(zoom,%.2f),zoom+%.6f,%.2f)", zoomTo, zoomRate, zoomTo),
+			"d": 1,
+			"s": "1280x720",
+		})
 	}
 
-	filters = append(filters, imageFilter+"[overlay]")
-
-	// Build overlay filter with position
-	overlayExpr := buildOverlayExpression(overlay)
-	filters = append(filters, fmt.Sprintf("[0:v][overlay]%s", overlayExpr))
-
-	return strings.Join(filters, ";")
-}
-
-// buildOverlayExpression builds the overlay expression with position and timing
-func buildOverlayExpression(overlay models.ImageOverlay) string {
+	// Calculate position
 	x, y := calculatePosition(overlay)
 
-	// Handle slide animation in overlay expression
+	// Handle slide animation in overlay position
 	if overlay.Animation == models.AnimationSlide && overlay.SlideDirection != nil {
 		duration := 1.0
 		if overlay.SlideDuration != nil {
@@ -96,11 +80,30 @@ func buildOverlayExpression(overlay models.ImageOverlay) string {
 		x, y = calculateSlidePosition(overlay, x, y, duration)
 	}
 
-	// Build enable expression for timing
-	enableExpr := fmt.Sprintf("enable='between(t,%.2f,%.2f)'", overlay.StartTime, overlay.EndTime)
+	// Build overlay with position and timing
+	videoStream := ffmpeg.Input(videoPath)
 
-	return fmt.Sprintf("overlay=%s:%s:%s", x, y, enableExpr)
+	// Apply overlay using Filter method
+	// Position goes in Args as "x:y", enable goes in KwArgs
+	positionArg := fmt.Sprintf("%s:%s", x, y)
+
+	output := ffmpeg.Filter(
+		[]*ffmpeg.Stream{videoStream, overlayStream},
+		"overlay",
+		ffmpeg.Args{positionArg},
+		ffmpeg.KwArgs{
+			"enable": fmt.Sprintf("between(t,%.2f,%.2f)", overlay.StartTime, overlay.EndTime),
+		},
+	).Output(outputPath, ffmpeg.KwArgs{
+		"c:v":    "libx264",
+		"preset": "medium",
+		"crf":    "23",
+		"c:a":    "copy",
+	}).OverWriteOutput()
+
+	return output.Run()
 }
+
 
 // calculatePosition calculates x,y position based on preset or custom values
 func calculatePosition(overlay models.ImageOverlay) (string, string) {
@@ -179,65 +182,54 @@ func (e *Executor) AddMultipleOverlays(ctx context.Context, videoPath string, ov
 		}
 	}
 
-	// Build FFmpeg command
-	args := []string{"-y", "-i", videoPath}
+	// Start with video input
+	currentStream := ffmpeg.Input(videoPath)
 
-	// Add all overlay images as inputs
+	// Apply each overlay sequentially
 	for _, overlay := range overlays {
-		args = append(args, "-i", overlay.FilePath)
-	}
+		overlayStream := ffmpeg.Input(overlay.FilePath).Filter("format", ffmpeg.Args{"rgba"})
 
-	// Build complex filter for multiple overlays
-	filterComplex := buildMultipleOverlaysFilter(overlays)
-	args = append(args, "-filter_complex", filterComplex)
-	args = append(args, "-c:v", "libx264", "-preset", "medium", "-crf", "23", "-c:a", "copy", outputPath)
+		// Apply fade animation if specified
+		if overlay.Animation == models.AnimationFade && overlay.FadeDuration != nil {
+			duration := *overlay.FadeDuration
+			totalDuration := overlay.EndTime - overlay.StartTime
 
-	return e.Execute(ctx, args)
-}
-
-// buildMultipleOverlaysFilter builds filter for multiple overlays (simplified version)
-func buildMultipleOverlaysFilter(overlays []models.ImageOverlay) string {
-	filters := make([]string, 0, len(overlays)*2)
-
-	// Process each overlay
-	for i, overlay := range overlays {
-		overlayFilter := buildOverlayFilterForIndex(overlay, i)
-		filters = append(filters, overlayFilter)
-	}
-
-	// Chain overlays
-	currentInput := "[0:v]"
-	for i := range overlays {
-		outputLabel := fmt.Sprintf("[v%d]", i)
-		if i == len(overlays)-1 {
-			outputLabel = "[outv]"
+			overlayStream = overlayStream.Filter("fade", ffmpeg.Args{}, ffmpeg.KwArgs{
+				"t":     "in",
+				"st":    0,
+				"d":     duration,
+				"alpha": 1,
+			}).Filter("fade", ffmpeg.Args{}, ffmpeg.KwArgs{
+				"t":     "out",
+				"st":    totalDuration - duration,
+				"d":     duration,
+				"alpha": 1,
+			})
 		}
-		overlayLabel := fmt.Sprintf("[overlay%d]", i)
 
-		x, y := calculatePosition(overlays[i])
-		enableExpr := fmt.Sprintf("enable='between(t,%.2f,%.2f)'", overlays[i].StartTime, overlays[i].EndTime)
+		// Calculate position
+		x, y := calculatePosition(overlay)
 
-		chainFilter := fmt.Sprintf("%s%soverlay=%s:%s:%s%s",
-			currentInput, overlayLabel, x, y, enableExpr, outputLabel)
-		filters = append(filters, chainFilter)
-
-		currentInput = outputLabel
+		// Apply overlay
+		currentStream = ffmpeg.Filter(
+			[]*ffmpeg.Stream{currentStream, overlayStream},
+			"overlay",
+			ffmpeg.Args{},
+			ffmpeg.KwArgs{
+				"x":      x,
+				"y":      y,
+				"enable": fmt.Sprintf("between(t,%.2f,%.2f)", overlay.StartTime, overlay.EndTime),
+			},
+		)
 	}
 
-	return strings.Join(filters, ";")
-}
+	// Output
+	output := currentStream.Output(outputPath, ffmpeg.KwArgs{
+		"c:v":    "libx264",
+		"preset": "medium",
+		"crf":    "23",
+		"c:a":    "copy",
+	}).OverWriteOutput()
 
-// buildOverlayFilterForIndex builds filter for a specific overlay index
-func buildOverlayFilterForIndex(overlay models.ImageOverlay, index int) string {
-	imageFilter := fmt.Sprintf("[%d:v]", index+1) // +1 because 0 is the video
-
-	// Add simple fade animation if specified
-	if overlay.Animation == models.AnimationFade && overlay.FadeDuration != nil {
-		duration := *overlay.FadeDuration
-		fadeIn := fmt.Sprintf("fade=t=in:st=%.2f:d=%.2f", overlay.StartTime, duration)
-		fadeOut := fmt.Sprintf("fade=t=out:st=%.2f:d=%.2f", overlay.EndTime-duration, duration)
-		imageFilter += fmt.Sprintf("%s,%s", fadeIn, fadeOut)
-	}
-
-	return fmt.Sprintf("%s[overlay%d]", imageFilter, index)
+	return output.Run()
 }

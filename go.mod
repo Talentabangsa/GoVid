@@ -15,6 +15,7 @@ require (
 require (
 	github.com/BurntSushi/toml v1.2.1 // indirect
 	github.com/andybalholm/brotli v1.2.0 // indirect
+	github.com/aws/aws-sdk-go v1.55.8 // indirect
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/buger/jsonparser v1.1.1 // indirect
 	github.com/bytedance/gopkg v0.1.3 // indirect
@@ -23,6 +24,7 @@ require (
 	github.com/gofiber/schema v1.6.0 // indirect
 	github.com/gofiber/utils/v2 v2.0.0-rc.1 // indirect
 	github.com/invopop/jsonschema v0.13.0 // indirect
+	github.com/jmespath/go-jmespath v0.4.0 // indirect
 	github.com/joho/godotenv v1.5.1 // indirect
 	github.com/klauspost/compress v1.18.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
@@ -33,6 +35,8 @@ require (
 	github.com/spf13/cast v1.10.0 // indirect
 	github.com/tinylib/msgp v1.4.0 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
+	github.com/u2takey/ffmpeg-go v0.5.0 // indirect
+	github.com/u2takey/go-utils v0.3.1 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasthttp v1.67.0 // indirect
 	github.com/wk8/go-ordered-map/v2 v2.1.8 // indirect

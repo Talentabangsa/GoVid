@@ -18,7 +18,7 @@ definitions:
         example: 1048576
         type: integer
     type: object
-  govid_internal_models.AnimationType:
+  models.AnimationType:
     enum:
     - fade
     - slide
@@ -30,7 +30,7 @@ definitions:
     - AnimationSlide
     - AnimationZoom
     - AnimationNone
-  govid_internal_models.AudioConfig:
+  models.AudioConfig:
     properties:
       end_time:
         description: trim audio end (seconds)
@@ -56,33 +56,33 @@ definitions:
         example: 0.3
         type: number
     type: object
-  govid_internal_models.AudioRequest:
+  models.AudioRequest:
     properties:
       audio:
-        $ref: '#/definitions/govid_internal_models.AudioConfig'
+        $ref: '#/definitions/models.AudioConfig'
       video_path:
         type: string
     required:
     - audio
     - video_path
     type: object
-  govid_internal_models.CompleteProcessRequest:
+  models.CompleteProcessRequest:
     properties:
       audio:
-        $ref: '#/definitions/govid_internal_models.AudioConfig'
+        $ref: '#/definitions/models.AudioConfig'
       overlays:
         items:
-          $ref: '#/definitions/govid_internal_models.ImageOverlay'
+          $ref: '#/definitions/models.ImageOverlay'
         type: array
       segments:
         items:
-          $ref: '#/definitions/govid_internal_models.VideoSegment'
+          $ref: '#/definitions/models.VideoSegment'
         minItems: 1
         type: array
     required:
     - segments
     type: object
-  govid_internal_models.ErrorResponse:
+  models.ErrorResponse:
     properties:
       error:
         example: Invalid request
@@ -91,7 +91,7 @@ definitions:
         example: Detailed error message
         type: string
     type: object
-  govid_internal_models.HealthResponse:
+  models.HealthResponse:
     properties:
       status:
         example: ok
@@ -100,11 +100,11 @@ definitions:
         example: 1.0.0
         type: string
     type: object
-  govid_internal_models.ImageOverlay:
+  models.ImageOverlay:
     properties:
       animation:
         allOf:
-        - $ref: '#/definitions/govid_internal_models.AnimationType'
+        - $ref: '#/definitions/models.AnimationType'
         example: fade
       end_time:
         description: when overlay disappears (seconds)
@@ -119,11 +119,11 @@ definitions:
         type: string
       position:
         allOf:
-        - $ref: '#/definitions/govid_internal_models.OverlayPosition'
+        - $ref: '#/definitions/models.OverlayPosition'
         example: top-left
       slide_direction:
         allOf:
-        - $ref: '#/definitions/govid_internal_models.SlideDirection'
+        - $ref: '#/definitions/models.SlideDirection'
         example: left
       slide_duration:
         example: 1
@@ -149,7 +149,7 @@ definitions:
         example: 1.5
         type: number
     type: object
-  govid_internal_models.JobResponse:
+  models.JobResponse:
     properties:
       created_at:
         example: "2025-01-13T10:00:00Z"
@@ -162,10 +162,10 @@ definitions:
         type: string
       status:
         allOf:
-        - $ref: '#/definitions/govid_internal_models.JobStatus'
+        - $ref: '#/definitions/models.JobStatus'
         example: pending
     type: object
-  govid_internal_models.JobStatus:
+  models.JobStatus:
     enum:
     - pending
     - processing
@@ -177,7 +177,7 @@ definitions:
     - JobStatusProcessing
     - JobStatusCompleted
     - JobStatusFailed
-  govid_internal_models.JobStatusResponse:
+  models.JobStatusResponse:
     properties:
       created_at:
         example: "2025-01-13T10:00:00Z"
@@ -197,23 +197,23 @@ definitions:
         type: integer
       status:
         allOf:
-        - $ref: '#/definitions/govid_internal_models.JobStatus'
+        - $ref: '#/definitions/models.JobStatus'
         example: processing
       updated_at:
         example: "2025-01-13T10:05:00Z"
         type: string
     type: object
-  govid_internal_models.MergeVideoRequest:
+  models.MergeVideoRequest:
     properties:
       segments:
         items:
-          $ref: '#/definitions/govid_internal_models.VideoSegment'
+          $ref: '#/definitions/models.VideoSegment'
         minItems: 2
         type: array
     required:
     - segments
     type: object
-  govid_internal_models.OverlayPosition:
+  models.OverlayPosition:
     enum:
     - top-left
     - top-right
@@ -229,17 +229,17 @@ definitions:
     - PositionBottomRight
     - PositionCenter
     - PositionCustom
-  govid_internal_models.OverlayRequest:
+  models.OverlayRequest:
     properties:
       overlay:
-        $ref: '#/definitions/govid_internal_models.ImageOverlay'
+        $ref: '#/definitions/models.ImageOverlay'
       video_path:
         type: string
     required:
     - overlay
     - video_path
     type: object
-  govid_internal_models.SlideDirection:
+  models.SlideDirection:
     enum:
     - left
     - right
@@ -251,7 +251,7 @@ definitions:
     - SlideFromRight
     - SlideFromTop
     - SlideFromBottom
-  govid_internal_models.VideoSegment:
+  models.VideoSegment:
     properties:
       end_time:
         description: in seconds, 0 means end of video
@@ -280,7 +280,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/govid_internal_models.HealthResponse'
+            $ref: '#/definitions/models.HealthResponse'
       summary: Health check endpoint
       tags:
       - Health
@@ -299,18 +299,51 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/govid_internal_models.JobStatusResponse'
+            $ref: '#/definitions/models.JobStatusResponse'
         "401":
           description: Unauthorized
           schema:
-            $ref: '#/definitions/govid_internal_models.ErrorResponse'
+            $ref: '#/definitions/models.ErrorResponse'
         "404":
           description: Not Found
           schema:
-            $ref: '#/definitions/govid_internal_models.ErrorResponse'
+            $ref: '#/definitions/models.ErrorResponse'
       security:
       - ApiKeyAuth: []
       summary: Get job status
+      tags:
+      - Jobs
+  /api/v1/jobs/{id}/download:
+    get:
+      description: Download the output file from a completed processing job
+      parameters:
+      - description: Job ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/octet-stream
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: file
+        "202":
+          description: Job not yet completed
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "404":
+          description: Job not found
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "500":
+          description: File not accessible
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+      security:
+      - ApiKeyAuth: []
+      summary: Download completed job output
       tags:
       - Jobs
   /api/v1/upload:
@@ -334,15 +367,15 @@ paths:
         "400":
           description: Bad Request
           schema:
-            $ref: '#/definitions/govid_internal_models.ErrorResponse'
+            $ref: '#/definitions/models.ErrorResponse'
         "401":
           description: Unauthorized
           schema:
-            $ref: '#/definitions/govid_internal_models.ErrorResponse'
+            $ref: '#/definitions/models.ErrorResponse'
         "500":
           description: Internal Server Error
           schema:
-            $ref: '#/definitions/govid_internal_models.ErrorResponse'
+            $ref: '#/definitions/models.ErrorResponse'
       security:
       - ApiKeyAuth: []
       summary: Upload a single file
@@ -369,15 +402,15 @@ paths:
         "400":
           description: Bad Request
           schema:
-            $ref: '#/definitions/govid_internal_models.ErrorResponse'
+            $ref: '#/definitions/models.ErrorResponse'
         "401":
           description: Unauthorized
           schema:
-            $ref: '#/definitions/govid_internal_models.ErrorResponse'
+            $ref: '#/definitions/models.ErrorResponse'
         "500":
           description: Internal Server Error
           schema:
-            $ref: '#/definitions/govid_internal_models.ErrorResponse'
+            $ref: '#/definitions/models.ErrorResponse'
       security:
       - ApiKeyAuth: []
       summary: Upload multiple files
@@ -395,7 +428,7 @@ paths:
         in: body
         name: request
         schema:
-          $ref: '#/definitions/govid_internal_models.AudioRequest'
+          $ref: '#/definitions/models.AudioRequest'
       - description: Video file (multipart)
         in: formData
         name: video
@@ -414,19 +447,19 @@ paths:
         "202":
           description: Accepted
           schema:
-            $ref: '#/definitions/govid_internal_models.JobResponse'
+            $ref: '#/definitions/models.JobResponse'
         "400":
           description: Bad Request
           schema:
-            $ref: '#/definitions/govid_internal_models.ErrorResponse'
+            $ref: '#/definitions/models.ErrorResponse'
         "401":
           description: Unauthorized
           schema:
-            $ref: '#/definitions/govid_internal_models.ErrorResponse'
+            $ref: '#/definitions/models.ErrorResponse'
         "500":
           description: Internal Server Error
           schema:
-            $ref: '#/definitions/govid_internal_models.ErrorResponse'
+            $ref: '#/definitions/models.ErrorResponse'
       security:
       - ApiKeyAuth: []
       summary: Add background music to video
@@ -444,7 +477,7 @@ paths:
         in: body
         name: request
         schema:
-          $ref: '#/definitions/govid_internal_models.MergeVideoRequest'
+          $ref: '#/definitions/models.MergeVideoRequest'
       - description: Video files to upload (multipart, 2-10 files)
         in: formData
         name: videos
@@ -455,19 +488,19 @@ paths:
         "202":
           description: Accepted
           schema:
-            $ref: '#/definitions/govid_internal_models.JobResponse'
+            $ref: '#/definitions/models.JobResponse'
         "400":
           description: Bad Request
           schema:
-            $ref: '#/definitions/govid_internal_models.ErrorResponse'
+            $ref: '#/definitions/models.ErrorResponse'
         "401":
           description: Unauthorized
           schema:
-            $ref: '#/definitions/govid_internal_models.ErrorResponse'
+            $ref: '#/definitions/models.ErrorResponse'
         "500":
           description: Internal Server Error
           schema:
-            $ref: '#/definitions/govid_internal_models.ErrorResponse'
+            $ref: '#/definitions/models.ErrorResponse'
       security:
       - ApiKeyAuth: []
       summary: Merge multiple videos with timeframes
@@ -485,7 +518,7 @@ paths:
         in: body
         name: request
         schema:
-          $ref: '#/definitions/govid_internal_models.OverlayRequest'
+          $ref: '#/definitions/models.OverlayRequest'
       - description: Video file (multipart)
         in: formData
         name: video
@@ -504,19 +537,19 @@ paths:
         "202":
           description: Accepted
           schema:
-            $ref: '#/definitions/govid_internal_models.JobResponse'
+            $ref: '#/definitions/models.JobResponse'
         "400":
           description: Bad Request
           schema:
-            $ref: '#/definitions/govid_internal_models.ErrorResponse'
+            $ref: '#/definitions/models.ErrorResponse'
         "401":
           description: Unauthorized
           schema:
-            $ref: '#/definitions/govid_internal_models.ErrorResponse'
+            $ref: '#/definitions/models.ErrorResponse'
         "500":
           description: Internal Server Error
           schema:
-            $ref: '#/definitions/govid_internal_models.ErrorResponse'
+            $ref: '#/definitions/models.ErrorResponse'
       security:
       - ApiKeyAuth: []
       summary: Add image overlay to video
@@ -533,26 +566,26 @@ paths:
         name: request
         required: true
         schema:
-          $ref: '#/definitions/govid_internal_models.CompleteProcessRequest'
+          $ref: '#/definitions/models.CompleteProcessRequest'
       produces:
       - application/json
       responses:
         "202":
           description: Accepted
           schema:
-            $ref: '#/definitions/govid_internal_models.JobResponse'
+            $ref: '#/definitions/models.JobResponse'
         "400":
           description: Bad Request
           schema:
-            $ref: '#/definitions/govid_internal_models.ErrorResponse'
+            $ref: '#/definitions/models.ErrorResponse'
         "401":
           description: Unauthorized
           schema:
-            $ref: '#/definitions/govid_internal_models.ErrorResponse'
+            $ref: '#/definitions/models.ErrorResponse'
         "500":
           description: Internal Server Error
           schema:
-            $ref: '#/definitions/govid_internal_models.ErrorResponse'
+            $ref: '#/definitions/models.ErrorResponse'
       security:
       - ApiKeyAuth: []
       summary: Complete video processing

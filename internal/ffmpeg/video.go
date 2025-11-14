@@ -3,8 +3,8 @@ package ffmpeg
 import (
 	"context"
 	"fmt"
-	"strings"
 
+	ffmpeg "github.com/u2takey/ffmpeg-go"
 	"govid/internal/models"
 )
 
@@ -21,68 +21,63 @@ func (e *Executor) MergeVideos(ctx context.Context, segments []models.VideoSegme
 		}
 	}
 
-	// Build FFmpeg command
-	args := []string{"-y"} // Overwrite output file
+	// Process each segment with trim and setpts
+	var streams []*ffmpeg.Stream
 
-	// Add input files
 	for _, seg := range segments {
-		args = append(args, "-i", seg.FilePath)
+		input := ffmpeg.Input(seg.FilePath)
+
+		// Trim video stream
+		var videoStream *ffmpeg.Stream
+		if seg.EndTime > 0 {
+			videoStream = input.Video().Trim(ffmpeg.KwArgs{
+				"start": seg.StartTime,
+				"end":   seg.EndTime,
+			}).SetPts("PTS-STARTPTS").Stream("", "")
+		} else {
+			if seg.StartTime > 0 {
+				videoStream = input.Video().Trim(ffmpeg.KwArgs{
+					"start": seg.StartTime,
+				}).SetPts("PTS-STARTPTS").Stream("", "")
+			} else {
+				videoStream = input.Video()
+			}
+		}
+
+		// Trim audio stream
+		var audioStream *ffmpeg.Stream
+		if seg.EndTime > 0 {
+			audioStream = input.Audio().Filter("atrim", ffmpeg.Args{}, ffmpeg.KwArgs{
+				"start": seg.StartTime,
+				"end":   seg.EndTime,
+			}).Filter("asetpts", ffmpeg.Args{"PTS-STARTPTS"})
+		} else {
+			if seg.StartTime > 0 {
+				audioStream = input.Audio().Filter("atrim", ffmpeg.Args{}, ffmpeg.KwArgs{
+					"start": seg.StartTime,
+				}).Filter("asetpts", ffmpeg.Args{"PTS-STARTPTS"})
+			} else {
+				audioStream = input.Audio()
+			}
+		}
+
+		streams = append(streams, videoStream, audioStream)
 	}
 
-	// Build filter_complex for trimming and concatenation
-	filterParts := make([]string, 0, len(segments)*2+1)
-	concatInputs := make([]string, 0, len(segments))
+	// Concatenate all streams
+	output := ffmpeg.Concat(streams, ffmpeg.KwArgs{
+		"n":  len(segments),
+		"v":  1,
+		"a":  1,
+	}).Output(outputPath, ffmpeg.KwArgs{
+		"c:v":    "libx264",
+		"preset": "medium",
+		"crf":    "23",
+		"c:a":    "aac",
+		"b:a":    "192k",
+	}).OverWriteOutput()
 
-	for i, seg := range segments {
-		// Build trim filter for video
-		var trimFilter string
-		if seg.EndTime > 0 {
-			trimFilter = fmt.Sprintf("[%d:v]trim=start=%.2f:end=%.2f,setpts=PTS-STARTPTS[v%d]",
-				i, seg.StartTime, seg.EndTime, i)
-		} else {
-			trimFilter = fmt.Sprintf("[%d:v]trim=start=%.2f,setpts=PTS-STARTPTS[v%d]",
-				i, seg.StartTime, i)
-		}
-		filterParts = append(filterParts, trimFilter)
-
-		// Build trim filter for audio
-		var atrimFilter string
-		if seg.EndTime > 0 {
-			atrimFilter = fmt.Sprintf("[%d:a]atrim=start=%.2f:end=%.2f,asetpts=PTS-STARTPTS[a%d]",
-				i, seg.StartTime, seg.EndTime, i)
-		} else {
-			atrimFilter = fmt.Sprintf("[%d:a]atrim=start=%.2f,asetpts=PTS-STARTPTS[a%d]",
-				i, seg.StartTime, i)
-		}
-		filterParts = append(filterParts, atrimFilter)
-
-		// Add to concat inputs
-		concatInputs = append(concatInputs, fmt.Sprintf("[v%d][a%d]", i, i))
-	}
-
-	// Build concat filter
-	concatFilter := fmt.Sprintf("%sconcat=n=%d:v=1:a=1[outv][outa]",
-		strings.Join(concatInputs, ""), len(segments))
-	filterParts = append(filterParts, concatFilter)
-
-	// Combine all filters
-	filterComplex := BuildFilterComplex(filterParts)
-	args = append(args, "-filter_complex", filterComplex)
-
-	// Map output
-	args = append(args, "-map", "[outv]", "-map", "[outa]")
-
-	// Output settings
-	args = append(args,
-		"-c:v", "libx264",    // Video codec
-		"-preset", "medium",   // Encoding speed
-		"-crf", "23",         // Quality (lower is better, 23 is default)
-		"-c:a", "aac",        // Audio codec
-		"-b:a", "192k",       // Audio bitrate
-		outputPath,
-	)
-
-	return e.Execute(ctx, args)
+	return output.Run()
 }
 
 // MergeVideosSimple merges videos without timeframe trimming (concatenation only)
@@ -91,35 +86,25 @@ func (e *Executor) MergeVideosSimple(ctx context.Context, inputPaths []string, o
 		return fmt.Errorf("at least 2 video files required for merging")
 	}
 
-	// Build FFmpeg command
-	args := []string{"-y"} // Overwrite output file
-
-	// Add input files
+	// Prepare streams for concatenation
+	var streams []*ffmpeg.Stream
 	for _, path := range inputPaths {
-		args = append(args, "-i", path)
+		input := ffmpeg.Input(path)
+		streams = append(streams, input.Video(), input.Audio())
 	}
 
-	// Build filter_complex for concatenation
-	concatInputs := make([]string, 0, len(inputPaths))
-	for i := range inputPaths {
-		concatInputs = append(concatInputs, fmt.Sprintf("[%d:v][%d:a]", i, i))
-	}
+	// Concatenate and output
+	output := ffmpeg.Concat(streams, ffmpeg.KwArgs{
+		"n": len(inputPaths),
+		"v": 1,
+		"a": 1,
+	}).Output(outputPath, ffmpeg.KwArgs{
+		"c:v":    "libx264",
+		"preset": "medium",
+		"crf":    "23",
+		"c:a":    "aac",
+		"b:a":    "192k",
+	}).OverWriteOutput()
 
-	filterComplex := fmt.Sprintf("%sconcat=n=%d:v=1:a=1[outv][outa]",
-		strings.Join(concatInputs, ""), len(inputPaths))
-
-	args = append(args, "-filter_complex", filterComplex)
-	args = append(args, "-map", "[outv]", "-map", "[outa]")
-
-	// Output settings
-	args = append(args,
-		"-c:v", "libx264",
-		"-preset", "medium",
-		"-crf", "23",
-		"-c:a", "aac",
-		"-b:a", "192k",
-		outputPath,
-	)
-
-	return e.Execute(ctx, args)
+	return output.Run()
 }

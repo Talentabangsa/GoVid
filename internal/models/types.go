@@ -18,8 +18,8 @@ const (
 // VideoSegment represents a video segment with timeframe
 type VideoSegment struct {
 	FilePath  string  `json:"file_path" example:"/uploads/video1.mp4"`
-	StartTime float64 `json:"start_time" example:"0"`     // in seconds
-	EndTime   float64 `json:"end_time" example:"10.5"`    // in seconds, 0 means end of video
+	StartTime float64 `json:"start_time" example:"0"`  // in seconds
+	EndTime   float64 `json:"end_time" example:"10.5"` // in seconds, 0 means end of video
 }
 
 // OverlayPosition represents predefined positions
@@ -74,7 +74,7 @@ type ImageOverlay struct {
 // AudioConfig represents background music configuration
 type AudioConfig struct {
 	FilePath  string   `json:"file_path" example:"/uploads/music.mp3"`
-	Volume    float64  `json:"volume" example:"0.3"`       // 0.0 to 1.0
+	Volume    float64  `json:"volume" example:"0.3"`             // 0.0 to 1.0
 	StartTime *float64 `json:"start_time,omitempty" example:"0"` // trim audio start (seconds)
 	EndTime   *float64 `json:"end_time,omitempty" example:"30"`  // trim audio end (seconds)
 	FadeIn    *float64 `json:"fade_in,omitempty" example:"2"`    // fade in duration
@@ -210,8 +210,9 @@ func (j *Job) GetStatus() JobStatusResponse {
 
 // JobStore manages jobs
 type JobStore struct {
-	jobs map[string]*Job
-	mu   sync.RWMutex
+	jobs        map[string]*Job
+	mu          sync.RWMutex
+	persistence *JobPersistence
 }
 
 // NewJobStore creates a new job store
@@ -221,11 +222,26 @@ func NewJobStore() *JobStore {
 	}
 }
 
+// NewJobStoreWithPersistence creates a new job store with persistence
+func NewJobStoreWithPersistence(jobsDir string) *JobStore {
+	store := &JobStore{
+		jobs:        make(map[string]*Job),
+		persistence: NewJobPersistence(jobsDir),
+	}
+	// Load existing jobs from disk
+	store.jobs = store.persistence.LoadAllJobs()
+	return store
+}
+
 // Add adds a job to the store
 func (s *JobStore) Add(job *Job) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.jobs[job.ID] = job
+	// Persist to disk if persistence is enabled
+	if s.persistence != nil {
+		_ = s.persistence.SaveJob(job)
+	}
 }
 
 // Get retrieves a job by ID
@@ -236,11 +252,27 @@ func (s *JobStore) Get(id string) (*Job, bool) {
 	return job, ok
 }
 
+// Update updates an existing job and persists changes
+func (s *JobStore) Update(job *Job) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.jobs[job.ID] = job
+	// Persist to disk if persistence is enabled
+	if s.persistence != nil {
+		return s.persistence.SaveJob(job)
+	}
+	return nil
+}
+
 // Delete removes a job from the store
 func (s *JobStore) Delete(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.jobs, id)
+	// Delete from disk if persistence is enabled
+	if s.persistence != nil {
+		_ = s.persistence.DeleteJob(id)
+	}
 }
 
 // UploadResponse represents file upload response
