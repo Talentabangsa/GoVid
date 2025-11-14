@@ -1,7 +1,6 @@
 package models
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +8,8 @@ import (
 	"time"
 
 	"govid/pkg/logger"
+
+	"github.com/bytedance/sonic"
 )
 
 // JobPersistence handles saving and loading jobs from disk
@@ -54,7 +55,7 @@ func (jp *JobPersistence) SaveJob(job *Job) error {
 
 	filePath := filepath.Join(jp.jobsDir, fmt.Sprintf("%s.json", status.JobID))
 
-	content, err := json.MarshalIndent(data, "", "  ")
+	content, err := sonic.MarshalIndent(data, "", "  ")
 	if err != nil {
 		logger.Error("Failed to marshal job %s: %v", status.JobID, err)
 		return err
@@ -82,7 +83,7 @@ func (jp *JobPersistence) LoadJob(jobID string) (*Job, error) {
 	}
 
 	var data jobData
-	if err := json.Unmarshal(content, &data); err != nil {
+	if err := sonic.Unmarshal(content, &data); err != nil {
 		logger.Error("Failed to unmarshal job %s: %v", jobID, err)
 		return nil, err
 	}
@@ -127,7 +128,7 @@ func (jp *JobPersistence) LoadAllJobs() map[string]*Job {
 		}
 
 		var data jobData
-		if err := json.Unmarshal(content, &data); err != nil {
+		if err := sonic.Unmarshal(content, &data); err != nil {
 			logger.Error("Failed to unmarshal job %s: %v", jobID, err)
 			continue
 		}

@@ -105,6 +105,12 @@ type CompleteProcessRequest struct {
 	Audio    *AudioConfig   `json:"audio,omitempty"`
 }
 
+// CombineVideosRequest represents request to combine videos from URLs
+type CombineVideosRequest struct {
+	Videos     []string `json:"videos" binding:"required,min=2"`
+	WebhookURL string   `json:"webhook_url,omitempty"`
+}
+
 // JobResponse represents a job response
 type JobResponse struct {
 	JobID     string    `json:"job_id" example:"550e8400-e29b-41d4-a716-446655440000"`
@@ -119,6 +125,7 @@ type JobStatusResponse struct {
 	Status     JobStatus `json:"status" example:"processing"`
 	Progress   int       `json:"progress" example:"50"` // 0-100
 	OutputPath string    `json:"output_path,omitempty" example:"/outputs/result.mp4"`
+	S3URL      string    `json:"s3_url,omitempty" example:"https://s3.amazonaws.com/bucket/video.mp4"`
 	Error      string    `json:"error,omitempty" example:""`
 	CreatedAt  time.Time `json:"created_at" example:"2025-01-13T10:00:00Z"`
 	UpdatedAt  time.Time `json:"updated_at" example:"2025-01-13T10:05:00Z"`
@@ -142,6 +149,8 @@ type Job struct {
 	Status     JobStatus
 	Progress   int
 	OutputPath string
+	S3URL      string
+	WebhookURL string
 	Error      string
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
@@ -184,6 +193,14 @@ func (j *Job) SetOutput(path string) {
 	j.UpdatedAt = time.Now()
 }
 
+// SetS3URL sets job S3 URL
+func (j *Job) SetS3URL(url string) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.S3URL = url
+	j.UpdatedAt = time.Now()
+}
+
 // SetError sets job error
 func (j *Job) SetError(err string) {
 	j.mu.Lock()
@@ -202,6 +219,7 @@ func (j *Job) GetStatus() JobStatusResponse {
 		Status:     j.Status,
 		Progress:   j.Progress,
 		OutputPath: j.OutputPath,
+		S3URL:      j.S3URL,
 		Error:      j.Error,
 		CreatedAt:  j.CreatedAt,
 		UpdatedAt:  j.UpdatedAt,

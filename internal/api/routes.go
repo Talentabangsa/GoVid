@@ -29,6 +29,7 @@ func SetupRoutes(app *fiber.App, handler *Handler, validator *auth.Validator) {
 	video.Post("/overlay", handler.AddImageOverlay)
 	video.Post("/audio", handler.AddBackgroundMusic)
 	video.Post("/process", handler.ProcessComplete)
+	video.Post("/combine", handler.CombineVideos)
 
 	// Job status endpoints
 	jobs := protected.Group("/jobs")

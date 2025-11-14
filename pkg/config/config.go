@@ -29,6 +29,14 @@ type Config struct {
 	// Job configuration
 	MaxConcurrentJobs int `env:"MAX_CONCURRENT_JOBS" env-default:"3"`
 	JobTimeout        int `env:"JOB_TIMEOUT" env-default:"3600"` // in seconds
+
+	// S3/MinIO configuration
+	S3Endpoint  string `env:"S3_ENDPOINT" env-required:"true"`
+	S3AccessKey string `env:"S3_ACCESS_KEY" env-required:"true"`
+	S3SecretKey string `env:"S3_SECRET_KEY" env-required:"true"`
+	S3Bucket    string `env:"S3_BUCKET" env-required:"true"`
+	S3Region    string `env:"S3_REGION" env-default:"us-east-1"`
+	S3UseSSL    bool   `env:"S3_USE_SSL" env-default:"true"`
 }
 
 // Load loads configuration from environment variables with defaults

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"mime/multipart"
 	"os"
 	"path/filepath"
 	"time"
@@ -13,22 +14,44 @@ import (
 	"govid/internal/ffmpeg"
 	"govid/internal/models"
 	"govid/pkg/config"
+	"govid/pkg/downloader"
 	"govid/pkg/logger"
+	"govid/pkg/storage"
+	"govid/pkg/webhook"
 )
 
 // Handler contains dependencies for API handlers
 type Handler struct {
-	executor *ffmpeg.Executor
-	jobStore *models.JobStore
-	cfg      *config.Config
+	executor   *ffmpeg.Executor
+	jobStore   *models.JobStore
+	cfg        *config.Config
+	s3Uploader *storage.S3Uploader
+	downloader *downloader.VideoDownloader
+	webhook    *webhook.Client
 }
 
 // NewHandler creates a new API handler
 func NewHandler(executor *ffmpeg.Executor, jobStore *models.JobStore, cfg *config.Config) *Handler {
+	// Initialize S3 uploader
+	s3Uploader, err := storage.NewS3Uploader(storage.S3Config{
+		Endpoint:  cfg.S3Endpoint,
+		AccessKey: cfg.S3AccessKey,
+		SecretKey: cfg.S3SecretKey,
+		Bucket:    cfg.S3Bucket,
+		Region:    cfg.S3Region,
+		UseSSL:    cfg.S3UseSSL,
+	})
+	if err != nil {
+		logger.Error("Failed to initialize S3 uploader: %v", err)
+	}
+
 	return &Handler{
-		executor: executor,
-		jobStore: jobStore,
-		cfg:      cfg,
+		executor:   executor,
+		jobStore:   jobStore,
+		cfg:        cfg,
+		s3Uploader: s3Uploader,
+		downloader: downloader.NewVideoDownloader(cfg.TempDir),
+		webhook:    webhook.NewClient(),
 	}
 }
 
@@ -631,4 +654,268 @@ func (h *Handler) UploadMultipleFiles(c fiber.Ctx) error {
 	return c.JSON(models.MultiUploadResponse{
 		Files: uploadedFiles,
 	})
+}
+
+// CombineVideos godoc
+// @Summary Combine videos from URLs or file uploads and upload to S3
+// @Description Accepts either JSON with video URLs or multipart/form-data with video files, combines them in order, and uploads to S3
+// @Tags Video
+// @Security ApiKeyAuth
+// @Accept json,multipart/form-data
+// @Produce json
+// @Param request body models.CombineVideosRequest false "Video URLs to combine (JSON mode)"
+// @Param videos formData []file false "Video files to combine (multipart mode)"
+// @Param webhook_url formData string false "Webhook URL for job completion notification (multipart mode)"
+// @Success 200 {object} models.JobResponse
+// @Failure 400 {object} models.ErrorResponse
+// @Failure 401 {object} models.ErrorResponse
+// @Failure 500 {object} models.ErrorResponse
+// @Router /api/v1/video/combine [post]
+func (h *Handler) CombineVideos(c fiber.Ctx) error {
+	// Check if S3 uploader is available
+	if h.s3Uploader == nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
+			Error:   "S3 uploader not configured",
+			Message: "S3 configuration is missing or invalid",
+		})
+	}
+
+	// Try to parse as multipart form first
+	if form, err := c.MultipartForm(); err == nil {
+		return h.handleCombineVideosMultipart(c, form)
+	}
+
+	// Otherwise, handle as JSON (URL mode)
+	return h.handleCombineVideosJSON(c)
+}
+
+// handleCombineVideosJSON handles JSON request with video URLs
+func (h *Handler) handleCombineVideosJSON(c fiber.Ctx) error {
+	var req models.CombineVideosRequest
+	if err := c.Bind().JSON(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(models.ErrorResponse{
+			Error:   "Invalid request body",
+			Message: err.Error(),
+		})
+	}
+
+	// Validate minimum videos
+	if len(req.Videos) < 2 {
+		return c.Status(fiber.StatusBadRequest).JSON(models.ErrorResponse{
+			Error:   "Invalid request",
+			Message: "At least 2 video URLs are required",
+		})
+	}
+
+	// Create job
+	job, response := h.createAndStartJob()
+
+	// Set webhook URL if provided
+	if req.WebhookURL != "" {
+		job.WebhookURL = req.WebhookURL
+		_ = h.jobStore.Update(job)
+	}
+
+	// Start async processing from URLs
+	go h.processCombineJobFromURLs(job, req.Videos)
+
+	logger.Info("Created combine videos job %s with %d URLs", job.ID, len(req.Videos))
+
+	return c.JSON(response)
+}
+
+// handleCombineVideosMultipart handles multipart/form-data request with file uploads
+func (h *Handler) handleCombineVideosMultipart(c fiber.Ctx, form *multipart.Form) error {
+	// Get uploaded files
+	files := form.File["videos"]
+	if len(files) < 2 {
+		return c.Status(fiber.StatusBadRequest).JSON(models.ErrorResponse{
+			Error:   "Invalid request",
+			Message: "At least 2 video files are required",
+		})
+	}
+
+	// Limit maximum files
+	if len(files) > 10 {
+		return c.Status(fiber.StatusBadRequest).JSON(models.ErrorResponse{
+			Error:   "Too many files",
+			Message: "Maximum 10 video files allowed",
+		})
+	}
+
+	// Save uploaded files to temp directory in order
+	uploadedPaths := make([]string, 0, len(files))
+	for i, file := range files {
+		filename := fmt.Sprintf("%s_%d_%s", uuid.New().String(), i, filepath.Base(file.Filename))
+		savePath := filepath.Join(h.cfg.TempDir, filename)
+
+		if err := c.SaveFile(file, savePath); err != nil {
+			// Clean up already saved files
+			for _, path := range uploadedPaths {
+				os.Remove(path)
+			}
+			return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
+				Error:   "Failed to save file",
+				Message: err.Error(),
+			})
+		}
+
+		uploadedPaths = append(uploadedPaths, savePath)
+		logger.Info("Saved uploaded file %d: %s", i, savePath)
+	}
+
+	// Get optional webhook URL from form
+	webhookURL := ""
+	if webhookValues, ok := form.Value["webhook_url"]; ok && len(webhookValues) > 0 {
+		webhookURL = webhookValues[0]
+	}
+
+	// Create job
+	job, response := h.createAndStartJob()
+
+	// Set webhook URL if provided
+	if webhookURL != "" {
+		job.WebhookURL = webhookURL
+		_ = h.jobStore.Update(job)
+	}
+
+	// Start async processing from uploaded files
+	go h.processCombineJobFromFiles(job, uploadedPaths)
+
+	logger.Info("Created combine videos job %s with %d uploaded files", job.ID, len(uploadedPaths))
+
+	return c.JSON(response)
+}
+
+// processCombineJobFromURLs processes a video combine job from URLs
+func (h *Handler) processCombineJobFromURLs(job *models.Job, videoURLs []string) {
+	job.UpdateStatus(models.JobStatusProcessing)
+	job.UpdateProgress(10)
+	_ = h.jobStore.Update(job)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(h.cfg.JobTimeout)*time.Second)
+	defer cancel()
+
+	logger.Info("Starting combine videos job %s from URLs", job.ID)
+
+	// Download videos in order
+	logger.Info("Downloading %d videos for job %s", len(videoURLs), job.ID)
+	job.UpdateProgress(20)
+	_ = h.jobStore.Update(job)
+
+	downloadedFiles, err := h.downloader.DownloadVideosInOrder(videoURLs)
+	if err != nil {
+		logger.Error("Failed to download videos for job %s: %v", job.ID, err)
+		job.SetError(fmt.Sprintf("Failed to download videos: %v", err))
+		_ = h.jobStore.Update(job)
+		h.sendWebhookIfConfigured(job)
+		return
+	}
+	defer h.downloader.CleanupFiles(downloadedFiles)
+
+	logger.Info("Downloaded %d videos for job %s", len(downloadedFiles), job.ID)
+	job.UpdateProgress(40)
+	_ = h.jobStore.Update(job)
+
+	// Continue with common processing
+	h.processCombineJobCommon(job, ctx, downloadedFiles, true)
+}
+
+// processCombineJobFromFiles processes a video combine job from uploaded files
+func (h *Handler) processCombineJobFromFiles(job *models.Job, uploadedFiles []string) {
+	job.UpdateStatus(models.JobStatusProcessing)
+	job.UpdateProgress(10)
+	_ = h.jobStore.Update(job)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(h.cfg.JobTimeout)*time.Second)
+	defer cancel()
+
+	logger.Info("Starting combine videos job %s from uploaded files", job.ID)
+
+	// Files are already uploaded, skip to merge
+	job.UpdateProgress(40)
+	_ = h.jobStore.Update(job)
+
+	// Continue with common processing
+	h.processCombineJobCommon(job, ctx, uploadedFiles, true)
+}
+
+// processCombineJobCommon handles the common video merge and S3 upload logic
+func (h *Handler) processCombineJobCommon(job *models.Job, ctx context.Context, inputFiles []string, cleanupFiles bool) {
+	// Cleanup files at the end if requested
+	if cleanupFiles {
+		defer h.downloader.CleanupFiles(inputFiles)
+	}
+
+	// Merge videos
+	outputPath := filepath.Join(h.cfg.OutputDir, fmt.Sprintf("%s.mp4", job.ID))
+	logger.Info("Merging %d videos for job %s", len(inputFiles), job.ID)
+	job.UpdateProgress(60)
+	_ = h.jobStore.Update(job)
+
+	if err := h.executor.MergeVideosSimple(ctx, inputFiles, outputPath); err != nil {
+		logger.Error("Failed to merge videos for job %s: %v", job.ID, err)
+		job.SetError(fmt.Sprintf("Failed to merge videos: %v", err))
+		_ = h.jobStore.Update(job)
+		h.sendWebhookIfConfigured(job)
+		return
+	}
+
+	logger.Info("Videos merged successfully for job %s", job.ID)
+	job.UpdateProgress(80)
+	job.SetOutput(outputPath)
+	_ = h.jobStore.Update(job)
+
+	// Upload to S3
+	logger.Info("Uploading to S3 for job %s", job.ID)
+	objectName := storage.GetObjectName(job.ID, outputPath)
+	s3URL, err := h.s3Uploader.Upload(ctx, outputPath, objectName)
+	if err != nil {
+		logger.Error("Failed to upload to S3 for job %s: %v", job.ID, err)
+		job.SetError(fmt.Sprintf("Failed to upload to S3: %v", err))
+		_ = h.jobStore.Update(job)
+		h.sendWebhookIfConfigured(job)
+		return
+	}
+
+	logger.Info("Uploaded to S3 for job %s: %s", job.ID, s3URL)
+	job.SetS3URL(s3URL)
+	job.UpdateProgress(90)
+	_ = h.jobStore.Update(job)
+
+	// Delete local file after successful upload
+	if err := os.Remove(outputPath); err != nil {
+		logger.Error("Failed to delete local file for job %s: %v", job.ID, err)
+		// Don't fail the job, just log the error
+	} else {
+		logger.Info("Deleted local file for job %s", job.ID)
+		// Clear output path since file is deleted
+		job.SetOutput("")
+	}
+
+	// Mark job as completed
+	job.UpdateProgress(100)
+	job.UpdateStatus(models.JobStatusCompleted)
+	_ = h.jobStore.Update(job)
+	logger.Info("Combine videos job %s completed successfully", job.ID)
+
+	// Send webhook notification
+	h.sendWebhookIfConfigured(job)
+}
+
+// sendWebhookIfConfigured sends a webhook notification if webhook URL is configured
+func (h *Handler) sendWebhookIfConfigured(job *models.Job) {
+	if job.WebhookURL == "" {
+		return
+	}
+
+	status := job.GetStatus()
+	payload := webhook.JobCompletionPayload{
+		JobID:  job.ID,
+		Status: string(status.Status),
+		S3URL:  status.S3URL,
+		Error:  status.Error,
+	}
+
+	h.webhook.SendJobCompleteAsync(job.WebhookURL, payload)
 }

@@ -3,9 +3,13 @@ package ffmpeg
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"govid/internal/models"
 
 	ffmpeg "github.com/u2takey/ffmpeg-go"
-	"govid/internal/models"
 )
 
 // MergeVideos merges multiple video segments with custom timeframes
@@ -22,7 +26,7 @@ func (e *Executor) MergeVideos(ctx context.Context, segments []models.VideoSegme
 	}
 
 	// Process each segment with trim and setpts
-	var streams []*ffmpeg.Stream
+	streams := make([]*ffmpeg.Stream, 0, len(segments)*2)
 
 	for _, seg := range segments {
 		input := ffmpeg.Input(seg.FilePath)
@@ -66,9 +70,9 @@ func (e *Executor) MergeVideos(ctx context.Context, segments []models.VideoSegme
 
 	// Concatenate all streams
 	output := ffmpeg.Concat(streams, ffmpeg.KwArgs{
-		"n":  len(segments),
-		"v":  1,
-		"a":  1,
+		"n": len(segments),
+		"v": 1,
+		"a": 1,
 	}).Output(outputPath, ffmpeg.KwArgs{
 		"c:v":    "libx264",
 		"preset": "medium",
@@ -86,18 +90,33 @@ func (e *Executor) MergeVideosSimple(ctx context.Context, inputPaths []string, o
 		return fmt.Errorf("at least 2 video files required for merging")
 	}
 
-	// Prepare streams for concatenation
-	var streams []*ffmpeg.Stream
-	for _, path := range inputPaths {
-		input := ffmpeg.Input(path)
-		streams = append(streams, input.Video(), input.Audio())
+	// Create temporary concat file list
+	concatFile, err := os.CreateTemp("", "concat-*.txt")
+	if err != nil {
+		return fmt.Errorf("failed to create concat file: %w", err)
 	}
+	defer os.Remove(concatFile.Name())
+	defer concatFile.Close()
 
-	// Concatenate and output
-	output := ffmpeg.Concat(streams, ffmpeg.KwArgs{
-		"n": len(inputPaths),
-		"v": 1,
-		"a": 1,
+	// Write file list in concat demuxer format
+	for _, path := range inputPaths {
+		absPath, err := filepath.Abs(path)
+		if err != nil {
+			return fmt.Errorf("failed to get absolute path for %s: %w", path, err)
+		}
+		// Escape single quotes in the path
+		escapedPath := strings.ReplaceAll(absPath, "'", "'\\''")
+		_, err = fmt.Fprintf(concatFile, "file '%s'\n", escapedPath)
+		if err != nil {
+			return fmt.Errorf("failed to write concat file: %w", err)
+		}
+	}
+	concatFile.Close()
+
+	// Use concat demuxer protocol
+	output := ffmpeg.Input(concatFile.Name(), ffmpeg.KwArgs{
+		"f":    "concat",
+		"safe": "0",
 	}).Output(outputPath, ffmpeg.KwArgs{
 		"c:v":    "libx264",
 		"preset": "medium",
