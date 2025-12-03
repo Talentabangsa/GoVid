@@ -4,8 +4,9 @@ import (
 	"context"
 	"fmt"
 
-	ffmpeg "github.com/u2takey/ffmpeg-go"
 	"govid/internal/models"
+
+	ffmpeg "github.com/u2takey/ffmpeg-go"
 )
 
 // AddImageOverlay adds an image overlay to a video with animations
@@ -103,7 +104,6 @@ func (e *Executor) AddImageOverlay(ctx context.Context, videoPath string, overla
 
 	return output.Run()
 }
-
 
 // calculatePosition calculates x,y position based on preset or custom values
 func calculatePosition(overlay models.ImageOverlay) (string, string) {

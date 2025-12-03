@@ -105,10 +105,17 @@ type CompleteProcessRequest struct {
 	Audio    *AudioConfig   `json:"audio,omitempty"`
 }
 
+// WebhookHeader represents a custom header for webhook requests
+type WebhookHeader struct {
+	Key   string `json:"key" example:"x-api-key"`
+	Value string `json:"value" example:"loremIPSUM"`
+}
+
 // CombineVideosRequest represents request to combine videos from URLs
 type CombineVideosRequest struct {
-	Videos     []string `json:"videos" binding:"required,min=2"`
-	WebhookURL string   `json:"webhook_url,omitempty"`
+	Videos        []string       `json:"videos" binding:"required,min=2"`
+	WebhookURL    string         `json:"webhook_url,omitempty"`
+	WebhookHeader *WebhookHeader `json:"webhook_header,omitempty"`
 }
 
 // JobResponse represents a job response
@@ -145,16 +152,17 @@ type HealthResponse struct {
 
 // Job represents a processing job
 type Job struct {
-	ID         string
-	Status     JobStatus
-	Progress   int
-	OutputPath string
-	S3URL      string
-	WebhookURL string
-	Error      string
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
-	mu         sync.RWMutex
+	ID            string
+	Status        JobStatus
+	Progress      int
+	OutputPath    string
+	S3URL         string
+	WebhookURL    string
+	WebhookHeader *WebhookHeader
+	Error         string
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+	mu            sync.RWMutex
 }
 
 // NewJob creates a new job
@@ -291,6 +299,14 @@ func (s *JobStore) Delete(id string) {
 	if s.persistence != nil {
 		_ = s.persistence.DeleteJob(id)
 	}
+}
+
+// GetJobsDir returns the jobs directory path
+func (s *JobStore) GetJobsDir() string {
+	if s.persistence == nil {
+		return ""
+	}
+	return s.persistence.GetJobsDir()
 }
 
 // UploadResponse represents file upload response

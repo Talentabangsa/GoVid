@@ -6,6 +6,8 @@ import (
 	"mime/multipart"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
@@ -28,10 +30,11 @@ type Handler struct {
 	s3Uploader *storage.S3Uploader
 	downloader *downloader.VideoDownloader
 	webhook    *webhook.Client
+	jobWG      *sync.WaitGroup
 }
 
 // NewHandler creates a new API handler
-func NewHandler(executor *ffmpeg.Executor, jobStore *models.JobStore, cfg *config.Config) *Handler {
+func NewHandler(executor *ffmpeg.Executor, jobStore *models.JobStore, cfg *config.Config, jobWG *sync.WaitGroup) *Handler {
 	// Initialize S3 uploader
 	s3Uploader, err := storage.NewS3Uploader(storage.S3Config{
 		Endpoint:  cfg.S3Endpoint,
@@ -52,6 +55,7 @@ func NewHandler(executor *ffmpeg.Executor, jobStore *models.JobStore, cfg *confi
 		s3Uploader: s3Uploader,
 		downloader: downloader.NewVideoDownloader(cfg.TempDir),
 		webhook:    webhook.NewClient(),
+		jobWG:      jobWG,
 	}
 }
 
@@ -154,7 +158,11 @@ func (h *Handler) MergeVideos(c fiber.Ctx) error {
 	}
 
 	job, response := h.createAndStartJob()
-	go h.processMergeJob(job, req)
+	h.jobWG.Add(1)
+	go func() {
+		defer h.jobWG.Done()
+		h.processMergeJob(job, req)
+	}()
 
 	return c.Status(fiber.StatusAccepted).JSON(response)
 }
@@ -249,7 +257,11 @@ func (h *Handler) AddImageOverlay(c fiber.Ctx) error {
 	}
 
 	job, response := h.createAndStartJob()
-	go h.processOverlayJob(job, req)
+	h.jobWG.Add(1)
+	go func() {
+		defer h.jobWG.Done()
+		h.processOverlayJob(job, req)
+	}()
 
 	return c.Status(fiber.StatusAccepted).JSON(response)
 }
@@ -344,7 +356,11 @@ func (h *Handler) AddBackgroundMusic(c fiber.Ctx) error {
 	}
 
 	job, response := h.createAndStartJob()
-	go h.processAudioJob(job, req)
+	h.jobWG.Add(1)
+	go func() {
+		defer h.jobWG.Done()
+		h.processAudioJob(job, req)
+	}()
 
 	return c.Status(fiber.StatusAccepted).JSON(response)
 }
@@ -380,7 +396,11 @@ func (h *Handler) ProcessComplete(c fiber.Ctx) error {
 	}
 
 	job, response := h.createAndStartJob()
-	go h.processCompleteJob(job, req)
+	h.jobWG.Add(1)
+	go func() {
+		defer h.jobWG.Done()
+		h.processCompleteJob(job, req)
+	}()
 
 	return c.Status(fiber.StatusAccepted).JSON(response)
 }
@@ -471,6 +491,106 @@ func (h *Handler) DownloadOutput(c fiber.Ctx) error {
 
 	// Send the file
 	return c.SendFile(status.OutputPath)
+}
+
+// CreateS3Link godoc
+// @Summary Upload job output to S3 and get shareable link
+// @Description Upload a completed job's output file to S3 and return the S3 URL. The local file will be deleted after successful upload.
+// @Tags Jobs
+// @Produce json
+// @Param id path string true "Job ID"
+// @Success 200 {object} models.JobStatusResponse
+// @Failure 404 {object} models.ErrorResponse "Job not found"
+// @Failure 202 {object} models.ErrorResponse "Job not yet completed"
+// @Failure 500 {object} models.ErrorResponse "S3 upload failed or file not accessible"
+// @Router /api/v1/jobs/{id}/create-link [post]
+// @Security ApiKeyAuth
+func (h *Handler) CreateS3Link(c fiber.Ctx) error {
+	jobID := c.Params("id")
+
+	// Check if S3 uploader is available
+	if h.s3Uploader == nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
+			Error:   "S3 uploader not configured",
+			Message: "S3 configuration is missing or invalid",
+		})
+	}
+
+	job, exists := h.jobStore.Get(jobID)
+	if !exists {
+		return c.Status(fiber.StatusNotFound).JSON(models.ErrorResponse{
+			Error:   "Job not found",
+			Message: fmt.Sprintf("Job with ID %s does not exist", jobID),
+		})
+	}
+
+	status := job.GetStatus()
+
+	// Check if job is completed
+	if status.Status != models.JobStatusCompleted {
+		return c.Status(fiber.StatusAccepted).JSON(models.ErrorResponse{
+			Error:   "Job not completed",
+			Message: fmt.Sprintf("Job is currently %s. Please wait for it to complete.", status.Status),
+		})
+	}
+
+	// Check if S3 URL already exists
+	if status.S3URL != "" {
+		logger.Info("S3 URL already exists for job %s: %s", jobID, status.S3URL)
+		return c.JSON(status)
+	}
+
+	// Check if output path is set
+	if status.OutputPath == "" {
+		return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
+			Error:   "No output file",
+			Message: "Job completed but no output file was generated",
+		})
+	}
+
+	// Verify file exists
+	if _, err := os.Stat(status.OutputPath); os.IsNotExist(err) {
+		logger.Error("Output file not found for job %s: %s", jobID, status.OutputPath)
+		return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
+			Error:   "File not found",
+			Message: "The output file no longer exists on the server",
+		})
+	}
+
+	// Upload to S3
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(h.cfg.JobTimeout)*time.Second)
+	defer cancel()
+
+	logger.Info("Uploading output file to S3 for job %s: %s", jobID, status.OutputPath)
+	objectName := storage.GetObjectName(jobID, status.OutputPath)
+	s3URL, err := h.s3Uploader.Upload(ctx, status.OutputPath, objectName)
+	if err != nil {
+		logger.Error("Failed to upload to S3 for job %s: %v", jobID, err)
+		return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
+			Error:   "S3 upload failed",
+			Message: err.Error(),
+		})
+	}
+
+	logger.Info("Successfully uploaded to S3 for job %s: %s", jobID, s3URL)
+
+	// Update job with S3 URL
+	job.SetS3URL(s3URL)
+	_ = h.jobStore.Update(job)
+
+	// Delete local file after successful upload
+	if err := os.Remove(status.OutputPath); err != nil {
+		logger.Error("Failed to delete local file for job %s: %v", jobID, err)
+		// Don't fail the request, just log the error
+	} else {
+		logger.Info("Deleted local file for job %s", jobID)
+		// Clear output path since file is deleted
+		job.SetOutput("")
+		_ = h.jobStore.Update(job)
+	}
+
+	// Return updated status
+	return c.JSON(job.GetStatus())
 }
 
 // createAndStartJob is a helper to create a job and return response
@@ -666,6 +786,8 @@ func (h *Handler) UploadMultipleFiles(c fiber.Ctx) error {
 // @Param request body models.CombineVideosRequest false "Video URLs to combine (JSON mode)"
 // @Param videos formData []file false "Video files to combine (multipart mode)"
 // @Param webhook_url formData string false "Webhook URL for job completion notification (multipart mode)"
+// @Param webhook_header_key formData string false "Webhook header key for custom headers (multipart mode)"
+// @Param webhook_header_value formData string false "Webhook header value for custom headers (multipart mode)"
 // @Success 200 {object} models.JobResponse
 // @Failure 400 {object} models.ErrorResponse
 // @Failure 401 {object} models.ErrorResponse
@@ -712,12 +834,35 @@ func (h *Handler) handleCombineVideosJSON(c fiber.Ctx) error {
 
 	// Set webhook URL if provided
 	if req.WebhookURL != "" {
+		// Validate webhook header if provided
+		if req.WebhookHeader != nil {
+			if req.WebhookHeader.Key == "" || len(req.WebhookHeader.Key) > 100 || len(req.WebhookHeader.Value) > 1000 {
+				return c.Status(fiber.StatusBadRequest).JSON(models.ErrorResponse{
+					Error:   "Invalid webhook header",
+					Message: "Header key must be non-empty and less than 100 characters, value less than 1000 characters",
+				})
+			}
+
+			// Prevent overriding critical headers
+			if strings.ToLower(req.WebhookHeader.Key) == "host" || strings.ToLower(req.WebhookHeader.Key) == "content-length" {
+				return c.Status(fiber.StatusBadRequest).JSON(models.ErrorResponse{
+					Error:   "Invalid webhook header",
+					Message: "Cannot override Host or Content-Length headers",
+				})
+			}
+		}
+
 		job.WebhookURL = req.WebhookURL
+		job.WebhookHeader = req.WebhookHeader
 		_ = h.jobStore.Update(job)
 	}
 
 	// Start async processing from URLs
-	go h.processCombineJobFromURLs(job, req.Videos)
+	h.jobWG.Add(1)
+	go func() {
+		defer h.jobWG.Done()
+		h.processCombineJobFromURLs(job, req.Videos)
+	}()
 
 	logger.Info("Created combine videos job %s with %d URLs", job.ID, len(req.Videos))
 
@@ -770,17 +915,52 @@ func (h *Handler) handleCombineVideosMultipart(c fiber.Ctx, form *multipart.Form
 		webhookURL = webhookValues[0]
 	}
 
+	// Get optional webhook header from form
+	var webhookHeader *models.WebhookHeader
+	if headerKeyValues, ok := form.Value["webhook_header_key"]; ok && len(headerKeyValues) > 0 {
+		if headerValueValues, ok := form.Value["webhook_header_value"]; ok && len(headerValueValues) > 0 {
+			key := headerKeyValues[0]
+			value := headerValueValues[0]
+
+			// Basic validation
+			if key == "" || len(key) > 100 || len(value) > 1000 {
+				return c.Status(fiber.StatusBadRequest).JSON(models.ErrorResponse{
+					Error:   "Invalid webhook header",
+					Message: "Header key must be non-empty and less than 100 characters, value less than 1000 characters",
+				})
+			}
+
+			// Prevent overriding critical headers
+			if strings.ToLower(key) == "host" || strings.ToLower(key) == "content-length" {
+				return c.Status(fiber.StatusBadRequest).JSON(models.ErrorResponse{
+					Error:   "Invalid webhook header",
+					Message: "Cannot override Host or Content-Length headers",
+				})
+			}
+
+			webhookHeader = &models.WebhookHeader{
+				Key:   key,
+				Value: value,
+			}
+		}
+	}
+
 	// Create job
 	job, response := h.createAndStartJob()
 
-	// Set webhook URL if provided
+	// Set webhook URL and header if provided
 	if webhookURL != "" {
 		job.WebhookURL = webhookURL
+		job.WebhookHeader = webhookHeader
 		_ = h.jobStore.Update(job)
 	}
 
 	// Start async processing from uploaded files
-	go h.processCombineJobFromFiles(job, uploadedPaths)
+	h.jobWG.Add(1)
+	go func() {
+		defer h.jobWG.Done()
+		h.processCombineJobFromFiles(job, uploadedPaths)
+	}()
 
 	logger.Info("Created combine videos job %s with %d uploaded files", job.ID, len(uploadedPaths))
 
@@ -917,5 +1097,11 @@ func (h *Handler) sendWebhookIfConfigured(job *models.Job) {
 		Error:  status.Error,
 	}
 
-	h.webhook.SendJobCompleteAsync(job.WebhookURL, payload)
+	// Convert WebhookHeader to headers map
+	headers := make(map[string]string)
+	if job.WebhookHeader != nil {
+		headers[job.WebhookHeader.Key] = job.WebhookHeader.Value
+	}
+
+	h.webhook.SendJobCompleteAsync(job.WebhookURL, headers, payload)
 }

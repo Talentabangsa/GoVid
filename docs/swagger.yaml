@@ -73,6 +73,8 @@ definitions:
           type: string
         minItems: 2
         type: array
+      webhook_header:
+        $ref: '#/definitions/govid_internal_models.WebhookHeader'
       webhook_url:
         type: string
     required:
@@ -280,6 +282,15 @@ definitions:
         example: 0
         type: number
     type: object
+  govid_internal_models.WebhookHeader:
+    properties:
+      key:
+        example: x-api-key
+        type: string
+      value:
+        example: loremIPSUM
+        type: string
+    type: object
 info:
   contact: {}
   description: FFmpeg video processing API with MCP server support
@@ -326,6 +337,40 @@ paths:
       security:
       - ApiKeyAuth: []
       summary: Get job status
+      tags:
+      - Jobs
+  /api/v1/jobs/{id}/create-link:
+    post:
+      description: Upload a completed job's output file to S3 and return the S3 URL.
+        The local file will be deleted after successful upload.
+      parameters:
+      - description: Job ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/govid_internal_models.JobStatusResponse'
+        "202":
+          description: Job not yet completed
+          schema:
+            $ref: '#/definitions/govid_internal_models.ErrorResponse'
+        "404":
+          description: Job not found
+          schema:
+            $ref: '#/definitions/govid_internal_models.ErrorResponse'
+        "500":
+          description: S3 upload failed or file not accessible
+          schema:
+            $ref: '#/definitions/govid_internal_models.ErrorResponse'
+      security:
+      - ApiKeyAuth: []
+      summary: Upload job output to S3 and get shareable link
       tags:
       - Jobs
   /api/v1/jobs/{id}/download:
@@ -503,6 +548,14 @@ paths:
       - description: Webhook URL for job completion notification (multipart mode)
         in: formData
         name: webhook_url
+        type: string
+      - description: Webhook header key for custom headers (multipart mode)
+        in: formData
+        name: webhook_header_key
+        type: string
+      - description: Webhook header value for custom headers (multipart mode)
+        in: formData
+        name: webhook_header_value
         type: string
       produces:
       - application/json

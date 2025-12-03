@@ -27,8 +27,9 @@ type Config struct {
 	JobsDir   string `env:"JOBS_DIR" env-default:"./jobs"`
 
 	// Job configuration
-	MaxConcurrentJobs int `env:"MAX_CONCURRENT_JOBS" env-default:"3"`
-	JobTimeout        int `env:"JOB_TIMEOUT" env-default:"3600"` // in seconds
+	MaxConcurrentJobs      int `env:"MAX_CONCURRENT_JOBS" env-default:"3"`
+	JobTimeout             int `env:"JOB_TIMEOUT" env-default:"3600"` // in seconds
+	ShutdownTimeoutSeconds int `env:"SHUTDOWN_TIMEOUT_SECONDS" env-default:"30"`
 
 	// S3/MinIO configuration
 	S3Endpoint  string `env:"S3_ENDPOINT" env-required:"true"`
@@ -37,6 +38,10 @@ type Config struct {
 	S3Bucket    string `env:"S3_BUCKET" env-required:"true"`
 	S3Region    string `env:"S3_REGION" env-default:"us-east-1"`
 	S3UseSSL    bool   `env:"S3_USE_SSL" env-default:"true"`
+
+	// Cleanup configuration
+	CleanupEnabled       bool `env:"CLEANUP_ENABLED" env-default:"true"`
+	CleanupRetentionDays int  `env:"CLEANUP_RETENTION_DAYS" env-default:"7"`
 }
 
 // Load loads configuration from environment variables with defaults

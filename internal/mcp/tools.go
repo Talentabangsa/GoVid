@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -25,10 +26,11 @@ type MCPServer struct {
 	executor *ffmpeg.Executor
 	jobStore *models.JobStore
 	cfg      *config.Config
+	jobWG    *sync.WaitGroup
 }
 
 // NewMCPServer creates a new MCP server with video processing tools
-func NewMCPServer(executor *ffmpeg.Executor, jobStore *models.JobStore, cfg *config.Config) *MCPServer {
+func NewMCPServer(executor *ffmpeg.Executor, jobStore *models.JobStore, cfg *config.Config, jobWG *sync.WaitGroup) *MCPServer {
 	mcpServer := server.NewMCPServer(
 		"govid-mcp-server",
 		"1.0.0",
@@ -40,6 +42,7 @@ func NewMCPServer(executor *ffmpeg.Executor, jobStore *models.JobStore, cfg *con
 		executor: executor,
 		jobStore: jobStore,
 		cfg:      cfg,
+		jobWG:    jobWG,
 	}
 
 	// Register tools
@@ -154,6 +157,38 @@ func (ms *MCPServer) createJobResponse() (*models.Job, string) {
 	return job, responseJSON
 }
 
+// handleVideoProcessingTool handles common video processing tool logic
+func (ms *MCPServer) handleVideoProcessingTool(_ context.Context, request mcp.CallToolRequest, jsonKey string, unmarshalFn func(string) (any, error), processFn func(*models.Job, string, any)) (*mcp.CallToolResult, error) {
+	args, ok := request.Params.Arguments.(map[string]any)
+	if !ok {
+		return mcp.NewToolResultError("invalid arguments format"), nil
+	}
+
+	videoPath, ok := args["video_path"].(string)
+	if !ok {
+		return mcp.NewToolResultError("video_path must be a string"), nil
+	}
+
+	jsonStr, ok := args[jsonKey].(string)
+	if !ok {
+		return mcp.NewToolResultError(fmt.Sprintf("%s must be a string", jsonKey)), nil
+	}
+
+	config, err := unmarshalFn(jsonStr)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to parse %s: %v", jsonKey, err)), nil
+	}
+
+	job, responseJSON := ms.createJobResponse()
+	ms.jobWG.Add(1)
+	go func() {
+		defer ms.jobWG.Done()
+		processFn(job, videoPath, config)
+	}()
+
+	return mcp.NewToolResultText(responseJSON), nil
+}
+
 // handleMergeVideos handles video merging requests
 func (ms *MCPServer) handleMergeVideos(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args, ok := request.Params.Arguments.(map[string]any)
@@ -176,65 +211,39 @@ func (ms *MCPServer) handleMergeVideos(ctx context.Context, request mcp.CallTool
 	}
 
 	job, responseJSON := ms.createJobResponse()
-	go ms.processMergeJob(job, segments)
+	ms.jobWG.Add(1)
+	go func() {
+		defer ms.jobWG.Done()
+		ms.processMergeJob(job, segments)
+	}()
 
 	return mcp.NewToolResultText(responseJSON), nil
 }
 
 // handleAddImageOverlay handles image overlay requests
 func (ms *MCPServer) handleAddImageOverlay(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	args, ok := request.Params.Arguments.(map[string]any)
-	if !ok {
-		return mcp.NewToolResultError("invalid arguments format"), nil
-	}
-
-	videoPath, ok := args["video_path"].(string)
-	if !ok {
-		return mcp.NewToolResultError("video_path must be a string"), nil
-	}
-
-	overlayJSON, ok := args["overlay_json"].(string)
-	if !ok {
-		return mcp.NewToolResultError("overlay_json must be a string"), nil
-	}
-
-	var overlay models.ImageOverlay
-	if err := sonic.UnmarshalString(overlayJSON, &overlay); err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to parse overlay_json: %v", err)), nil
-	}
-
-	job, responseJSON := ms.createJobResponse()
-	go ms.processOverlayJob(job, videoPath, overlay)
-
-	return mcp.NewToolResultText(responseJSON), nil
+	return ms.handleVideoProcessingTool(ctx, request, "overlay_json",
+		func(jsonStr string) (any, error) {
+			var overlay models.ImageOverlay
+			err := sonic.UnmarshalString(jsonStr, &overlay)
+			return overlay, err
+		},
+		func(job *models.Job, videoPath string, config any) {
+			ms.processOverlayJob(job, videoPath, config.(models.ImageOverlay))
+		})
 }
 
 // handleAddBackgroundMusic handles background music requests
 func (ms *MCPServer) handleAddBackgroundMusic(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	args, ok := request.Params.Arguments.(map[string]any)
-	if !ok {
-		return mcp.NewToolResultError("invalid arguments format"), nil
-	}
-
-	videoPath, ok := args["video_path"].(string)
-	if !ok {
-		return mcp.NewToolResultError("video_path must be a string"), nil
-	}
-
-	audioJSON, ok := args["audio_json"].(string)
-	if !ok {
-		return mcp.NewToolResultError("audio_json must be a string"), nil
-	}
-
-	var audio models.AudioConfig
-	if err := sonic.UnmarshalString(audioJSON, &audio); err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to parse audio_json: %v", err)), nil
-	}
-
-	job, responseJSON := ms.createJobResponse()
-	go ms.processAudioJob(job, videoPath, audio)
-
-	return mcp.NewToolResultText(responseJSON), nil
+	return ms.handleVideoProcessingTool(ctx, request, "audio_json",
+		func(jsonStr string) (any, error) {
+			var audio models.AudioConfig
+			err := sonic.UnmarshalString(jsonStr, &audio)
+			return audio, err
+		},
+		func(job *models.Job, videoPath string, config any) {
+			ms.processAudioJob(job, videoPath, config.(models.AudioConfig))
+		})
 }
 
 // handleProcessComplete handles complete processing requests
@@ -259,7 +268,11 @@ func (ms *MCPServer) handleProcessComplete(ctx context.Context, request mcp.Call
 	}
 
 	job, responseJSON := ms.createJobResponse()
-	go ms.processCompleteJob(job, req)
+	ms.jobWG.Add(1)
+	go func() {
+		defer ms.jobWG.Done()
+		ms.processCompleteJob(job, req)
+	}()
 
 	return mcp.NewToolResultText(responseJSON), nil
 }

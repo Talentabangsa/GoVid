@@ -27,13 +27,16 @@ func NewJobPersistence(jobsDir string) *JobPersistence {
 
 // jobData is the serializable representation of a job
 type jobData struct {
-	ID         string    `json:"id"`
-	Status     JobStatus `json:"status"`
-	Progress   int       `json:"progress"`
-	OutputPath string    `json:"output_path"`
-	Error      string    `json:"error"`
-	CreatedAt  string    `json:"created_at"`
-	UpdatedAt  string    `json:"updated_at"`
+	ID            string         `json:"id"`
+	Status        JobStatus      `json:"status"`
+	Progress      int            `json:"progress"`
+	OutputPath    string         `json:"output_path"`
+	S3URL         string         `json:"s3_url"`
+	WebhookURL    string         `json:"webhook_url"`
+	WebhookHeader *WebhookHeader `json:"webhook_header,omitempty"`
+	Error         string         `json:"error"`
+	CreatedAt     string         `json:"created_at"`
+	UpdatedAt     string         `json:"updated_at"`
 }
 
 // SaveJob saves a job to disk
@@ -44,16 +47,20 @@ func (jp *JobPersistence) SaveJob(job *Job) error {
 	status := job.GetStatus()
 
 	data := jobData{
-		ID:         status.JobID,
-		Status:     status.Status,
-		Progress:   status.Progress,
-		OutputPath: status.OutputPath,
-		Error:      status.Error,
-		CreatedAt:  status.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
-		UpdatedAt:  status.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		ID:            status.JobID,
+		Status:        status.Status,
+		Progress:      status.Progress,
+		OutputPath:    status.OutputPath,
+		S3URL:         status.S3URL,
+		WebhookURL:    job.WebhookURL,
+		WebhookHeader: job.WebhookHeader,
+		Error:         status.Error,
+		CreatedAt:     status.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		UpdatedAt:     status.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
 	}
 
 	filePath := filepath.Join(jp.jobsDir, fmt.Sprintf("%s.json", status.JobID))
+	tempPath := filePath + ".tmp"
 
 	content, err := sonic.MarshalIndent(data, "", "  ")
 	if err != nil {
@@ -61,8 +68,14 @@ func (jp *JobPersistence) SaveJob(job *Job) error {
 		return err
 	}
 
-	if err := os.WriteFile(filePath, content, 0o644); err != nil {
-		logger.Error("Failed to save job %s to %s: %v", status.JobID, filePath, err)
+	if err := os.WriteFile(tempPath, content, 0o644); err != nil {
+		logger.Error("Failed to write temp job file %s: %v", tempPath, err)
+		return err
+	}
+
+	if err := os.Rename(tempPath, filePath); err != nil {
+		logger.Error("Failed to rename temp job file %s to %s: %v", tempPath, filePath, err)
+		os.Remove(tempPath) // cleanup
 		return err
 	}
 
@@ -93,6 +106,9 @@ func (jp *JobPersistence) LoadJob(jobID string) (*Job, error) {
 	job.Status = data.Status
 	job.Progress = data.Progress
 	job.OutputPath = data.OutputPath
+	job.S3URL = data.S3URL
+	job.WebhookURL = data.WebhookURL
+	job.WebhookHeader = data.WebhookHeader
 	job.Error = data.Error
 	job.CreatedAt, _ = time.Parse("2006-01-02T15:04:05Z07:00", data.CreatedAt)
 	job.UpdatedAt, _ = time.Parse("2006-01-02T15:04:05Z07:00", data.UpdatedAt)
@@ -137,6 +153,9 @@ func (jp *JobPersistence) LoadAllJobs() map[string]*Job {
 		job.Status = data.Status
 		job.Progress = data.Progress
 		job.OutputPath = data.OutputPath
+		job.S3URL = data.S3URL
+		job.WebhookURL = data.WebhookURL
+		job.WebhookHeader = data.WebhookHeader
 		job.Error = data.Error
 		job.CreatedAt, _ = time.Parse("2006-01-02T15:04:05Z07:00", data.CreatedAt)
 		job.UpdatedAt, _ = time.Parse("2006-01-02T15:04:05Z07:00", data.UpdatedAt)
@@ -163,4 +182,9 @@ func (jp *JobPersistence) DeleteJob(jobID string) error {
 
 	logger.Debug("Job %s deleted from disk", jobID)
 	return nil
+}
+
+// GetJobsDir returns the jobs directory path
+func (jp *JobPersistence) GetJobsDir() string {
+	return jp.jobsDir
 }

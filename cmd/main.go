@@ -10,10 +10,12 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -26,6 +28,7 @@ import (
 	"govid/internal/mcp"
 	"govid/internal/models"
 	"govid/pkg/auth"
+	"govid/pkg/cleanup"
 	"govid/pkg/config"
 	"govid/pkg/logger"
 )
@@ -42,19 +45,39 @@ func main() {
 	logger.Info("HTTP API Port: %s", cfg.HTTPPort)
 	logger.Info("MCP Server Port: %s", cfg.MCPPort)
 
+	// Create shutdown context
+	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
+
 	// Initialize shared components
-	executor := ffmpeg.NewExecutor(cfg.FFmpegBinary, time.Duration(cfg.JobTimeout)*time.Second)
+	var jobWG sync.WaitGroup
+	executor := ffmpeg.NewExecutor(cfg.FFmpegBinary, time.Duration(cfg.JobTimeout)*time.Second, int64(cfg.MaxConcurrentJobs))
 	jobStore := models.NewJobStoreWithPersistence(cfg.JobsDir)
 
 	// Initialize validators
 	httpValidator := auth.NewValidator(cfg.HTTPAPIKey)
 	mcpValidator := auth.NewValidator(cfg.MCPAPIKey)
 
+	// Start cleanup scheduler if enabled
+	var cleanupScheduler *cleanup.Scheduler
+	if cfg.CleanupEnabled {
+		cleanupScheduler = cleanup.NewScheduler(
+			cfg.OutputDir,
+			cfg.UploadDir,
+			cfg.TempDir,
+			jobStore,
+			cfg.CleanupRetentionDays,
+		)
+		cleanupScheduler.Start()
+		logger.Info("Cleanup scheduler enabled (retention: %d days)", cfg.CleanupRetentionDays)
+	} else {
+		logger.Info("Cleanup scheduler disabled")
+	}
+
 	// Start HTTP API server
-	go startHTTPServer(cfg, executor, jobStore, httpValidator)
+	go startHTTPServer(shutdownCtx, cfg, executor, jobStore, httpValidator, &jobWG)
 
 	// Start MCP server
-	go startMCPServer(cfg, executor, jobStore, mcpValidator)
+	go startMCPServer(shutdownCtx, cfg, executor, jobStore, mcpValidator, &jobWG)
 
 	// Wait for interrupt signal
 	quit := make(chan os.Signal, 1)
@@ -62,10 +85,40 @@ func main() {
 	<-quit
 
 	logger.Info("Shutting down servers...")
+
+	// Cancel shutdown context to signal servers to stop
+	shutdownCancel()
+
+	// Stop cleanup scheduler if running
+	if cleanupScheduler != nil {
+		cleanupScheduler.Stop()
+	}
+
+	// Wait for active jobs to finish (with timeout)
+	shutdownTimeout := cfg.ShutdownTimeoutSeconds
+	done := make(chan struct{})
+	go func() {
+		jobWG.Wait()
+		close(done)
+	}()
+
+	if shutdownTimeout == 0 {
+		<-done // wait forever
+		logger.Info("all jobs finished")
+	} else {
+		timeoutCtx, cancel := context.WithTimeout(context.Background(), time.Duration(shutdownTimeout)*time.Second)
+		defer cancel()
+		select {
+		case <-done:
+			logger.Info("all jobs finished")
+		case <-timeoutCtx.Done():
+			logger.Info("shutdown timeout reached; exiting")
+		}
+	}
 }
 
 // startHTTPServer starts the HTTP API server
-func startHTTPServer(cfg *config.Config, executor *ffmpeg.Executor, jobStore *models.JobStore, validator *auth.Validator) {
+func startHTTPServer(ctx context.Context, cfg *config.Config, executor *ffmpeg.Executor, jobStore *models.JobStore, validator *auth.Validator, jobWG *sync.WaitGroup) {
 	app := fiber.New(fiber.Config{
 		AppName:           "GoVid API v1.0.0",
 		ServerHeader:      "GoVid",
@@ -76,12 +129,19 @@ func startHTTPServer(cfg *config.Config, executor *ffmpeg.Executor, jobStore *mo
 	})
 
 	// Initialize handler
-	handler := api.NewHandler(executor, jobStore, cfg)
+	handler := api.NewHandler(executor, jobStore, cfg, jobWG)
 
 	// Setup routes
 	api.SetupRoutes(app, handler, validator)
 
 	logger.Info("HTTP API server starting on port %s", cfg.HTTPPort)
+
+	// Shutdown goroutine
+	go func() {
+		<-ctx.Done()
+		logger.Info("Shutting down HTTP server...")
+		_ = app.ShutdownWithContext(ctx)
+	}()
 
 	if err := app.Listen(":"+cfg.HTTPPort, fiber.ListenConfig{
 		DisableStartupMessage: true,
@@ -93,9 +153,9 @@ func startHTTPServer(cfg *config.Config, executor *ffmpeg.Executor, jobStore *mo
 }
 
 // startMCPServer starts the MCP server
-func startMCPServer(cfg *config.Config, executor *ffmpeg.Executor, jobStore *models.JobStore, validator *auth.Validator) {
+func startMCPServer(ctx context.Context, cfg *config.Config, executor *ffmpeg.Executor, jobStore *models.JobStore, validator *auth.Validator, jobWG *sync.WaitGroup) {
 	// Create MCP server
-	mcpServer := mcp.NewMCPServer(executor, jobStore, cfg)
+	mcpServer := mcp.NewMCPServer(executor, jobStore, cfg, jobWG)
 
 	// Create StreamableHTTP server
 	httpServer := server.NewStreamableHTTPServer(
@@ -137,6 +197,13 @@ func startMCPServer(cfg *config.Config, executor *ffmpeg.Executor, jobStore *mod
 		Addr:    ":" + cfg.MCPPort,
 		Handler: mux,
 	}
+
+	// Shutdown goroutine
+	go func() {
+		<-ctx.Done()
+		logger.Info("Shutting down MCP server...")
+		_ = srv.Shutdown(ctx)
+	}()
 
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		logger.Error("MCP server error: %v", err)

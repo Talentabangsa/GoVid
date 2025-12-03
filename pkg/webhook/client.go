@@ -35,7 +35,7 @@ func NewClient() *Client {
 }
 
 // SendJobComplete sends a job completion notification to a webhook URL
-func (c *Client) SendJobComplete(ctx context.Context, webhookURL string, payload JobCompletionPayload) error {
+func (c *Client) SendJobComplete(ctx context.Context, webhookURL string, headers map[string]string, payload JobCompletionPayload) error {
 	if webhookURL == "" {
 		return nil // No webhook URL provided, nothing to do
 	}
@@ -58,6 +58,11 @@ func (c *Client) SendJobComplete(ctx context.Context, webhookURL string, payload
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "GoVid/1.0")
 
+	// Set custom headers if provided
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
+
 	// Send request
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -74,7 +79,7 @@ func (c *Client) SendJobComplete(ctx context.Context, webhookURL string, payload
 }
 
 // SendJobCompleteAsync sends a job completion notification asynchronously
-func (c *Client) SendJobCompleteAsync(webhookURL string, payload JobCompletionPayload) {
+func (c *Client) SendJobCompleteAsync(webhookURL string, headers map[string]string, payload JobCompletionPayload) {
 	if webhookURL == "" {
 		return
 	}
@@ -83,7 +88,7 @@ func (c *Client) SendJobCompleteAsync(webhookURL string, payload JobCompletionPa
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 
-		err := c.SendJobComplete(ctx, webhookURL, payload)
+		err := c.SendJobComplete(ctx, webhookURL, headers, payload)
 		if err != nil {
 			log.Printf("Failed to send webhook to %s: %v", webhookURL, err)
 		} else {

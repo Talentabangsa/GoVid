@@ -4,8 +4,9 @@ import (
 	"context"
 	"fmt"
 
-	ffmpeg "github.com/u2takey/ffmpeg-go"
 	"govid/internal/models"
+
+	ffmpeg "github.com/u2takey/ffmpeg-go"
 )
 
 // AddBackgroundMusic adds background music to a video with volume control and fade effects
@@ -31,9 +32,9 @@ func (e *Executor) AddBackgroundMusic(ctx context.Context, videoPath string, aud
 		"amix",
 		ffmpeg.Args{},
 		ffmpeg.KwArgs{
-			"inputs":               2,
-			"duration":             "first",
-			"dropout_transition":   2,
+			"inputs":             2,
+			"duration":           "first",
+			"dropout_transition": 2,
 		},
 	)
 
@@ -42,9 +43,9 @@ func (e *Executor) AddBackgroundMusic(ctx context.Context, videoPath string, aud
 		[]*ffmpeg.Stream{videoStream.Video(), mixedAudio},
 		outputPath,
 		ffmpeg.KwArgs{
-			"c:v":  "copy",
-			"c:a":  "aac",
-			"b:a":  "192k",
+			"c:v": "copy",
+			"c:a": "aac",
+			"b:a": "192k",
 		},
 	).OverWriteOutput()
 

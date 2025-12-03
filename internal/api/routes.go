@@ -35,6 +35,7 @@ func SetupRoutes(app *fiber.App, handler *Handler, validator *auth.Validator) {
 	jobs := protected.Group("/jobs")
 	jobs.Get("/:id", handler.GetJobStatus)
 	jobs.Get("/:id/download", handler.DownloadOutput)
+	jobs.Post("/:id/create-link", handler.CreateS3Link)
 
 	// Upload endpoints
 	protected.Post("/upload", handler.UploadFile)
